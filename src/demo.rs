@@ -874,14 +874,106 @@ fn sample_lyrics() -> crate::lyrics::Lyrics {
     crate::lyrics::Lyrics {
         lines: lines
             .iter()
-            .map(|(at_ms, text)| crate::lyrics::Line {
-                at_ms: Some(*at_ms),
-                text: (*text).to_string(),
-            })
+            .map(|(at_ms, text)| crate::lyrics::Line::new(Some(*at_ms), *text))
             .collect(),
         synced: true,
         instrumental: false,
+        ..crate::lyrics::Lyrics::default()
     }
+}
+
+/// The same song with timing inside every line, as Spicy Lyrics answers,
+/// and the community credit its terms require.
+#[cfg(any(test, feature = "demo"))]
+fn word_sample_lyrics() -> crate::lyrics::Lyrics {
+    let mut lyrics = sample_lyrics();
+    let timing: Vec<u32> = lyrics.lines.iter().filter_map(|line| line.at_ms).collect();
+    let texts: Vec<String> = lyrics.lines.iter().map(|line| line.text.clone()).collect();
+    lyrics.lines = texts
+        .iter()
+        .enumerate()
+        .map(|(index, text)| {
+            let at = timing[index];
+            let next = timing.get(index + 1).copied().unwrap_or(at + 6_500);
+            demo_word_line(at, next, text)
+        })
+        .collect();
+    lyrics.attribution = Some(crate::lyrics::Attribution {
+        source: "spicy_lyrics".into(),
+        uploader: Some(crate::lyrics::Credit {
+            name: "night_driver".into(),
+            url: Some("https://spicylyrics.org".into()),
+        }),
+        maker: Some(crate::lyrics::Credit {
+            name: "demo_sync".into(),
+            url: Some("https://spicylyrics.org".into()),
+        }),
+    });
+    lyrics.song_writers = vec!["Demo Writer".into()];
+    lyrics
+}
+
+/// A demo line with word timing, split into two syllables when a word is long
+/// enough to make the karaoke fill visible.
+#[cfg(any(test, feature = "demo"))]
+fn demo_word_line(at_ms: u32, next_at_ms: u32, text: &str) -> crate::lyrics::Line {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.is_empty() {
+        return crate::lyrics::Line::new(Some(at_ms), text);
+    }
+    let end_all = next_at_ms.saturating_sub(350).max(at_ms + 900);
+    let per_word = ((end_all - at_ms) / words.len() as u32).max(220);
+    let mut at = at_ms;
+    let mut syllables = Vec::new();
+    for (index, word) in words.iter().enumerate() {
+        let word_end = if index + 1 == words.len() {
+            end_all
+        } else {
+            (at + per_word).min(end_all)
+        };
+        let parts = demo_syllables(word);
+        let per_part = ((word_end - at) / parts.len() as u32).max(60);
+        for (part_index, part) in parts.iter().enumerate() {
+            let start = at + per_part * part_index as u32;
+            let end = if part_index + 1 == parts.len() {
+                word_end
+            } else {
+                at + per_part * (part_index + 1) as u32
+            };
+            syllables.push(crate::lyrics::Syllable {
+                at_ms: start,
+                end_ms: end.max(start + 60),
+                text: (*part).to_string(),
+                // The marker joins this syllable to the one after it, so
+                // every piece but the last of a word carries it.
+                part_of_word: part_index + 1 < parts.len(),
+                ..crate::lyrics::Syllable::default()
+            });
+        }
+        at = word_end.max(at + 1);
+    }
+    crate::lyrics::Line {
+        at_ms: Some(at_ms),
+        end_ms: Some(end_all),
+        syllables,
+        text: text.to_string(),
+        ..crate::lyrics::Line::default()
+    }
+}
+
+/// Splits a demo word in half when it is long enough for two syllables.
+#[cfg(any(test, feature = "demo"))]
+fn demo_syllables(word: &str) -> Vec<&str> {
+    let count = word.chars().count();
+    if count < 7 || !word.chars().all(char::is_alphabetic) {
+        return vec![word];
+    }
+    let middle = word
+        .char_indices()
+        .nth(count / 2)
+        .map(|(at, _)| at)
+        .unwrap_or(word.len());
+    vec![&word[..middle], &word[middle..]]
 }
 
 /// Invented friends for `--demo-show friends`: one listening now, long
@@ -1842,24 +1934,48 @@ pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
                     },
                 );
             }
-            "lyrics" | "lyrics-fullscreen" => {
+            "lyrics" | "lyrics-lines" | "lyrics-fullscreen" => {
                 app.lyrics_uri = app.now_playing().map(|now| now.uri);
-                app.lyrics = Loadable::Loaded(Some(sample_lyrics()));
+                // `lyrics` and the real full screen show the word-synced
+                // renderer; `lyrics-lines` keeps the older line-synced look
+                // for comparison and for tests of line layout.
+                let lyrics = if surface == "lyrics-lines" {
+                    sample_lyrics()
+                } else {
+                    word_sample_lyrics()
+                };
+                app.lyrics = Loadable::Loaded(Some(lyrics));
                 app.lyrics_following = true;
                 app.show_lyrics_panel = true;
+                // Sit inside the sung line, so a still shot shows the
+                // karaoke fill part way through a word.
+                if let Some(remote) = &mut app.remote {
+                    remote.state.progress_ms = Some(80_400);
+                }
                 if surface == "lyrics-fullscreen" {
                     app.actions.push(Action::SetLyricsFullscreen(true));
                 }
             }
             // Full-screen lyrics drawn in the window as it is, for shots at
             // a chosen size, which a real full screen would override.
-            "lyrics-fullscreen-view" | "lyrics-fullscreen-instrumental" => {
+            "lyrics-fullscreen-view"
+            | "lyrics-fullscreen-instrumental"
+            | "lyrics-words-fullscreen-view" => {
                 app.lyrics_uri = app.now_playing().map(|now| now.uri);
-                let mut lyrics = sample_lyrics();
+                let mut lyrics = if surface == "lyrics-words-fullscreen-view" {
+                    word_sample_lyrics()
+                } else {
+                    sample_lyrics()
+                };
                 lyrics.instrumental = surface == "lyrics-fullscreen-instrumental";
                 app.lyrics = Loadable::Loaded(Some(lyrics));
                 app.lyrics_following = true;
                 app.show_lyrics_panel = true;
+                // Sit inside the sung line here too, so the fill is visible
+                // part way through a word rather than almost done.
+                if let Some(remote) = &mut app.remote {
+                    remote.state.progress_ms = Some(80_400);
+                }
                 app.lyrics_fullscreen = Some(false);
             }
             // Emoji in titles, artists, playlist names and lyrics: joined
@@ -8893,10 +9009,13 @@ mod tests {
             placed
         };
         let assert_same_row = |placed: &[(String, egui::Rect)], left: &str, right: &str| {
+            // A label such as "Now playing" also names a section lower in
+            // the queue panel; the header is the topmost one.
             let at = |label: &str| {
                 placed
                     .iter()
-                    .find(|(text, _)| text == label)
+                    .filter(|(text, _)| text == label)
+                    .min_by(|a, b| a.1.top().total_cmp(&b.1.top()))
                     .unwrap_or_else(|| panic!("{label} was never drawn: {placed:?}"))
                     .1
             };
@@ -8917,7 +9036,7 @@ mod tests {
                 assert_same_row(&placed, "Queue", "Recent");
             }
             if lyrics {
-                assert_same_row(&placed, "Lyrics", "Follow");
+                assert_same_row(&placed, "Now playing", "Follow");
             }
         }
         app.backend.shutdown();
@@ -9100,6 +9219,55 @@ mod tests {
             );
             app.backend.shutdown();
         }
+    }
+
+    /// Word-synced lines are painted a syllable at a time, so the whole line
+    /// is never one text run.
+    #[cfg(feature = "demo")]
+    #[test]
+    fn word_synced_lyrics_are_painted_in_syllables() {
+        let (ctx, mut app) = accessible_app("word-synced-syllables");
+        apply_flags(&mut app, None, Some("lyrics-words-fullscreen-view"));
+        let remote = app.remote.as_mut().unwrap();
+        remote.state.is_playing = false;
+        remote.state.progress_ms = Some(106_000);
+        let mut texts = Vec::new();
+        for frame in 0..10 {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    time: Some(f64::from(frame) / 30.0),
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1280.0, 800.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| app.frame_ui(ui),
+            );
+            output.textures_delta.clear();
+            fn walk(shape: &egui::epaint::Shape, texts: &mut Vec<String>) {
+                match shape {
+                    egui::epaint::Shape::Text(text) => texts.push(text.galley.job.text.clone()),
+                    egui::epaint::Shape::Vec(shapes) => {
+                        shapes.iter().for_each(|shape| walk(shape, texts))
+                    }
+                    _ => {}
+                }
+            }
+            texts.clear();
+            for clipped in &output.shapes {
+                walk(&clipped.shape, &mut texts);
+            }
+        }
+        assert!(texts.iter().any(|text| text == "Some"), "{texts:?}");
+        assert!(texts.iter().any(|text| text == "where"), "{texts:?}");
+        assert!(
+            !texts
+                .iter()
+                .any(|text| text == "Somewhere past the county line"),
+            "the line is not painted as one run: {texts:?}"
+        );
+        app.backend.shutdown();
     }
 
     /// Full screen puts the cover and the lyrics side by side as one centred

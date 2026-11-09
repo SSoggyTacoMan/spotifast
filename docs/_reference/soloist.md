@@ -146,7 +146,8 @@ position; it does not skip through earlier songs or shorten the playlist.
 Lyrics also keep their existing sources. Spotify's own lyrics are tried when
 the separate librespot session is signed in, even while Soloist plays. Soloist
 does not supply lyrics through its API or replace that session's login. Without
-it, cached Spotify lyrics remain usable and LRCLIB provides the fallback.
+it, cached Spotify lyrics remain usable, Spicy Lyrics answers when a key is
+configured, and LRCLIB provides the fallback.
 If these features are missing, choose **Settings → Spotify Soloist → Spotify
 access → Authorize**. This separate browser approval enables Made for you, listening
 activity and Spotify lyrics while keeping Soloist selected. The listening

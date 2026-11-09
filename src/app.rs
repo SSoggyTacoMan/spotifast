@@ -4459,8 +4459,10 @@ impl App {
         }
         self.lyrics = Loadable::Loading;
         let local_file = self.local_file(&now.uri).map(std::path::Path::to_path_buf);
+        let track_id = now.id.clone();
         self.backend.send(Command::Lyrics(Box::new(LyricsRequest {
             uri: now.uri,
+            track_id,
             query: crate::lyrics::Query {
                 artist: now
                     .artists
@@ -16172,13 +16174,16 @@ mod tests {
             }
             app.lyrics = Loadable::Loaded(Some(crate::lyrics::Lyrics {
                 lines: (0..80)
-                    .map(|i| crate::lyrics::Line {
-                        at_ms: Some(i * 5000),
-                        text: format!("Autoscroll lyric line {i}"),
+                    .map(|i| {
+                        crate::lyrics::Line::new(
+                            Some(i * 5000),
+                            format!("Autoscroll lyric line {i}"),
+                        )
                     })
                     .collect(),
                 synced: true,
                 instrumental: false,
+                ..crate::lyrics::Lyrics::default()
             }));
             if let Some(remote) = &mut app.remote {
                 remote.state.is_playing = false;

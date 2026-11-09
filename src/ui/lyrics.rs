@@ -1,9 +1,12 @@
 //! The words of the playing track, in a side panel that follows the song.
 
-use egui::{Align, Color32, Frame, Layout, Margin, Rect, Sense, UiBuilder, pos2, vec2};
+use egui::{
+    Align, Color32, FontId, Frame, Galley, Layout, Margin, Rect, Sense, UiBuilder, pos2, vec2,
+};
 
 use crate::app::App;
 use crate::i18n::{gettext, pgettext};
+use crate::lyrics::{Line, Lyrics};
 use crate::model::{Action, Loadable};
 use crate::theme::{self, Icon};
 
@@ -11,6 +14,10 @@ use super::widgets;
 
 const LINE_SIZE: f32 = 19.0;
 const LINE_GAP: f32 = 10.0;
+/// The gap between two rows of a word-synced line that wrapped.
+const WORD_ROW_GAP: f32 = 4.0;
+/// The gap above a line's translation or backing vocals.
+const EXTRA_GAP: f32 = 4.0;
 /// Where the line being sung sits, as a fraction of the visible lyrics from
 /// the top: high up, so the lines to come fill most of the view.
 const SUNG_LINE_AT: f32 = 0.2;
@@ -34,6 +41,319 @@ const LIGHT_UP_SECONDS: f32 = 0.22;
 fn blend(from: egui::Color32, to: egui::Color32, t: f32) -> egui::Color32 {
     let t = t.clamp(0.0, 1.0);
     egui::Color32::from(egui::Rgba::from(from) * (1.0 - t) + egui::Rgba::from(to) * t)
+}
+
+/// One syllable placed inside a word.
+struct WordPiece {
+    pos: egui::Pos2,
+    /// The glyphs in the line's quiet colour.
+    galley: std::sync::Arc<Galley>,
+    /// The same glyphs in the karaoke colour, made only for the line being
+    /// sung.
+    bright: Option<std::sync::Arc<Galley>>,
+    at_ms: u32,
+    end_ms: u32,
+}
+
+/// A word's syllables, which wrap as one piece.
+struct WordCluster {
+    pieces: Vec<WordPiece>,
+}
+
+/// A word-synced line laid out for this frame.
+struct WordLayout {
+    clusters: Vec<WordCluster>,
+    /// Translations and backing vocals, already coloured.
+    extras: Vec<(egui::Pos2, std::sync::Arc<Galley>)>,
+    height: f32,
+}
+
+/// Lays a word-synced line out in words, wrapping between them. Every syllable
+/// inside a word stays together, so a word is never split across two rows.
+fn layout_word_line(
+    ui: &egui::Ui,
+    line: &Line,
+    font: &FontId,
+    base: Color32,
+    fill: Option<Color32>,
+    wrap: f32,
+) -> WordLayout {
+    let painter = ui.painter();
+    let sample = painter.layout_no_wrap("Ag".to_owned(), font.clone(), base);
+    let line_height = sample.size().y.max(font.size * 1.25);
+    let space = painter
+        .layout_no_wrap(" ".to_owned(), font.clone(), base)
+        .size()
+        .x
+        .max(font.size * 0.18);
+
+    let mut clusters: Vec<WordCluster> = Vec::new();
+    for (index, syllable) in line.syllables.iter().enumerate() {
+        // A syllable starts a new word unless the one before it continues
+        // into it.
+        if index == 0 || !line.syllables[index - 1].part_of_word {
+            clusters.push(WordCluster { pieces: Vec::new() });
+        }
+        let galley = painter.layout_no_wrap(syllable.text.clone(), font.clone(), base);
+        let bright =
+            fill.map(|fill| painter.layout_no_wrap(syllable.text.clone(), font.clone(), fill));
+        clusters
+            .last_mut()
+            .expect("a cluster was just opened")
+            .pieces
+            .push(WordPiece {
+                pos: egui::Pos2::ZERO,
+                galley,
+                bright,
+                at_ms: syllable.at_ms,
+                end_ms: syllable.end_ms.max(syllable.at_ms),
+            });
+    }
+
+    let mut x = 0.0_f32;
+    let mut y = 0.0_f32;
+    for cluster in &mut clusters {
+        let width: f32 = cluster
+            .pieces
+            .iter()
+            .map(|piece| piece.galley.size().x)
+            .sum();
+        let mut left = x;
+        if left > 0.0 {
+            left += space;
+        }
+        // A word too wide for the column still starts on its own row.
+        if left > 0.0 && left + width > wrap + 0.5 {
+            left = 0.0;
+            y += line_height + WORD_ROW_GAP;
+        }
+        let mut pen = left;
+        for piece in &mut cluster.pieces {
+            piece.pos = pos2(pen, y);
+            pen += piece.galley.size().x;
+        }
+        x = pen;
+    }
+    let main_height = if clusters.is_empty() {
+        line_height
+    } else {
+        y + line_height
+    };
+
+    let mut extras = Vec::new();
+    let mut extra_y = main_height;
+    let mut add_extra = |text: &str, size: f32, color: Color32| {
+        if text.trim().is_empty() {
+            return;
+        }
+        let galley = painter.layout(text.to_string(), theme::regular(size), color, wrap.max(1.0));
+        extras.push((pos2(0.0, extra_y + EXTRA_GAP), galley.clone()));
+        extra_y += galley.size().y + EXTRA_GAP;
+    };
+    let backing = joined_text(&line.background);
+    add_extra(
+        &backing,
+        (font.size * 0.72).max(11.0),
+        base.gamma_multiply(0.72),
+    );
+    let transliterated = line
+        .transliterated
+        .clone()
+        .or_else(|| joined_transliteration(&line.syllables));
+    if let Some(text) = transliterated {
+        add_extra(
+            &text,
+            (font.size * 0.68).max(11.0),
+            base.gamma_multiply(0.62),
+        );
+    }
+    if let Some(text) = &line.translated {
+        add_extra(
+            text,
+            (font.size * 0.68).max(11.0),
+            base.gamma_multiply(0.55),
+        );
+    }
+
+    WordLayout {
+        clusters,
+        extras,
+        height: extra_y.max(main_height),
+    }
+}
+
+/// Syllables as a line of words, with spaces only between words.
+fn joined_text(syllables: &[crate::lyrics::Syllable]) -> String {
+    joined_field_owned(
+        syllables,
+        |syllable| Some(syllable.text.as_str()),
+        |syllable| syllable.part_of_word,
+    )
+    .unwrap_or_default()
+}
+
+/// The romanisation, joined by its own word markers when the source gave
+/// them, since it can split words where the original text does not.
+fn joined_transliteration(syllables: &[crate::lyrics::Syllable]) -> Option<String> {
+    joined_field_owned(
+        syllables,
+        |syllable| syllable.transliterated.as_deref(),
+        |syllable| {
+            syllable
+                .transliterated_part_of_word
+                .unwrap_or(syllable.part_of_word)
+        },
+    )
+}
+
+fn joined_field_owned(
+    syllables: &[crate::lyrics::Syllable],
+    field: impl Fn(&crate::lyrics::Syllable) -> Option<&str>,
+    joins_next: impl Fn(&crate::lyrics::Syllable) -> bool,
+) -> Option<String> {
+    let mut text = String::new();
+    let mut previous_joined = None;
+    for syllable in syllables {
+        let Some(part) = field(syllable).filter(|part| !part.trim().is_empty()) else {
+            continue;
+        };
+        if previous_joined == Some(false) {
+            text.push(' ');
+        }
+        text.push_str(part.trim());
+        previous_joined = Some(joins_next(syllable));
+    }
+    (!text.is_empty()).then_some(text)
+}
+
+/// Draws a word-synced line, filling each syllable from left to right while it
+/// sounds. Returns the clickable row and its height.
+fn paint_word_line(
+    ui: &mut egui::Ui,
+    line: &Line,
+    position_ms: u32,
+    active: bool,
+    font: FontId,
+    base: Color32,
+    fill: Color32,
+    wrap: f32,
+) -> (egui::Response, f32) {
+    let layout = layout_word_line(ui, line, &font, base, active.then_some(fill), wrap);
+    let (rect, response) =
+        ui.allocate_exact_size(vec2(wrap.max(1.0), layout.height), Sense::click());
+    if !ui.is_rect_visible(rect) {
+        return (response, layout.height);
+    }
+    let painter = ui.painter();
+    for cluster in &layout.clusters {
+        for piece in &cluster.pieces {
+            let pos = rect.min + piece.pos.to_vec2();
+            painter.galley(pos, piece.galley.clone(), base);
+            let Some(bright) = &piece.bright else {
+                continue;
+            };
+            let progress = crate::lyrics::span_progress(piece.at_ms, piece.end_ms, position_ms);
+            if progress <= 0.0 {
+                continue;
+            }
+            let clip = Rect::from_min_max(
+                pos,
+                pos2(
+                    pos.x + piece.galley.size().x * progress,
+                    pos.y + piece.galley.size().y,
+                ),
+            );
+            painter
+                .with_clip_rect(clip.intersect(rect))
+                .galley(pos, bright.clone(), fill);
+        }
+    }
+    for (pos, galley) in &layout.extras {
+        painter.galley(rect.min + pos.to_vec2(), galley.clone(), base);
+    }
+    (response, layout.height)
+}
+
+/// Whether a line can use the word renderer: it has syllables and reads left
+/// to right, so the left-to-right fill means what it should.
+fn word_line(line: &Line) -> bool {
+    line.has_syllables() && !crate::bidi::is_rtl(&line.text)
+}
+
+/// The credits required beside the words, at the end of the scroll.
+fn attribution(
+    ui: &mut egui::Ui,
+    lyrics: &Lyrics,
+    palette: &theme::Palette,
+    locale: crate::i18n::Locale,
+) {
+    let Some(attribution) = &lyrics.attribution else {
+        return;
+    };
+    ui.add_space(20.0);
+    ui.painter().hline(
+        ui.max_rect().x_range().shrink(2.0),
+        ui.cursor().top(),
+        egui::Stroke::new(1.0, palette.outline),
+    );
+    ui.add_space(10.0);
+    theme::text(
+        ui,
+        &crate::lyrics::attribution_title(attribution, locale),
+        theme::regular(11.5),
+        palette.dim,
+    );
+    if attribution.source == "spicy_lyrics" {
+        ui.add_space(2.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            for (verb, credit) in [
+                (
+                    gettext(locale, "Uploaded by"),
+                    attribution.uploader.as_ref(),
+                ),
+                (gettext(locale, "Made by"), attribution.maker.as_ref()),
+            ] {
+                let Some(credit) = credit else {
+                    continue;
+                };
+                theme::text(ui, verb, theme::regular(11.0), palette.dim);
+                let label = egui::RichText::new(&credit.name)
+                    .font(theme::regular(11.0))
+                    .color(palette.secondary);
+                let response = ui.add(egui::Label::new(label).sense(Sense::click()));
+                if response.hovered() && credit.url.is_some() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                if response.clicked()
+                    && let Some(url) = &credit.url
+                {
+                    ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+                }
+            }
+        });
+    }
+    if !lyrics.song_writers.is_empty() {
+        ui.add_space(2.0);
+        theme::text(
+            ui,
+            gettext(locale, "Written by {names}")
+                .replace("{names}", &lyrics.song_writers.join(", ")),
+            theme::regular(11.0),
+            palette.dim,
+        );
+    }
+    ui.add_space(10.0);
+}
+
+/// The player keeps the karaoke fill moving, but only while the panel is on
+/// screen and the song is playing.
+fn request_word_repaint(ctx: &egui::Context, now: &crate::app::NowPlaying, lyrics: &Lyrics) {
+    // The fill is progress, not motion: it keeps moving even when the
+    // desktop asks for less animation.
+    if now.playing && lyrics.word_synced() {
+        ctx.request_repaint_after(std::time::Duration::from_millis(16));
+    }
 }
 
 pub fn side_panel(app: &mut App, ui: &mut egui::Ui) {
@@ -67,7 +387,7 @@ pub fn side_panel(app: &mut App, ui: &mut egui::Ui) {
             ui.add_space(4.0);
             theme::text(
                 ui,
-                gettext(app.locale, "Lyrics"),
+                gettext(app.locale, "Now playing"),
                 theme::bold(18.0),
                 palette.text,
             );
@@ -112,6 +432,8 @@ pub fn side_panel(app: &mut App, ui: &mut egui::Ui) {
                 }
             });
         });
+        ui.add_space(10.0);
+        now_playing_header(app, ui);
         ui.add_space(8.0);
         contents(app, ui);
     });
@@ -122,6 +444,47 @@ pub fn side_panel(app: &mut App, ui: &mut egui::Ui) {
         app.settings.lyrics_width = current_width;
         app.actions.push(Action::SettingsChanged);
     }
+}
+
+/// The cover and song above the words, as Spotify's right panel shows them.
+fn now_playing_header(app: &mut App, ui: &mut egui::Ui) {
+    let palette = app.palette;
+    let Some(now) = app.now_playing() else {
+        return;
+    };
+    ui.horizontal(|ui| {
+        let size = 56.0;
+        let (rect, _) = ui.allocate_exact_size(vec2(size, size), Sense::hover());
+        widgets::playing_cover(
+            ui,
+            &palette,
+            app.backend.art(),
+            "lyrics-now-playing",
+            app.small_art(&now, size),
+            rect,
+            theme::RADIUS as f32,
+        );
+        ui.add_space(2.0);
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(&now.title)
+                        .font(theme::semibold(16.0))
+                        .color(palette.text),
+                )
+                .truncate(),
+            );
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(&now.subtitle)
+                        .font(theme::regular(12.0))
+                        .color(palette.secondary),
+                )
+                .truncate(),
+            );
+        });
+    });
 }
 
 fn contents(app: &mut App, ui: &mut egui::Ui) {
@@ -208,9 +571,10 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
 
     let active = lyrics.active_line(now.position_ms);
     let follow = app.lyrics_following && app.lyrics_line_shown != Some(active);
-    // The line being sung is bold and in the accent colour; every other
-    // line is quiet, regular text, the same before and after it has been
-    // sung. A line takes 220 ms to light up or fade, as in omarchy-lyrics.
+    // The line being sung is bold; every other line is quiet, regular text,
+    // the same before and after it has been sung. Word-synced lines fill in
+    // white as they are sung, as Spotify's own lyrics do. A line takes
+    // 220 ms to light up or fade, as in omarchy-lyrics.
     let quiet = palette.text.gamma_multiply(0.45);
     let scroll = crate::autoscroll::show(
         ui,
@@ -229,6 +593,7 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
                 );
             }
             ui.add_space(12.0);
+            let wrap = ui.available_width();
             for (index, line) in lyrics.lines.iter().enumerate() {
                 let is_active = active == Some(index);
                 let lit = ui.ctx().animate_bool_with_time(
@@ -237,38 +602,66 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
                     crate::motion::seconds(ui.ctx(), LIGHT_UP_SECONDS),
                 );
                 let color = blend(quiet, palette.accent, lit);
-                let font = if lit > 0.5 {
-                    theme::bold(LINE_SIZE)
-                } else {
-                    theme::regular(LINE_SIZE)
-                };
-                // A timed line with no words is the band playing on.
-                let text = if line.text.is_empty() && lyrics.synced {
-                    "\u{266a}"
-                } else {
-                    line.text.as_str()
-                };
-                let sense = if lyrics.synced {
-                    Sense::click()
-                } else {
-                    Sense::hover()
-                };
-                let response = if crate::bidi::is_rtl(text) {
-                    let galley = crate::bidi::layout(
-                        ui.painter(),
-                        text,
+                let response = if word_line(line) {
+                    // Unsung words sit in grey and fill bright white as they
+                    // sound, as in Spotify's lyrics view.
+                    let base = if is_active {
+                        palette.secondary
+                    } else if line.at_ms.is_some_and(|at| at < now.position_ms) {
+                        palette.text.gamma_multiply(0.55)
+                    } else {
+                        quiet
+                    };
+                    let font = if lit > 0.5 {
+                        theme::bold(LINE_SIZE)
+                    } else {
+                        theme::regular(LINE_SIZE)
+                    };
+                    let (response, _) = paint_word_line(
+                        ui,
+                        line,
+                        now.position_ms,
+                        is_active,
                         font,
-                        color,
-                        ui.available_width(),
-                        usize::MAX,
-                        None,
+                        base,
+                        palette.text,
+                        wrap,
                     );
-                    ui.add(egui::Label::new(galley).sense(sense))
+                    response
                 } else {
-                    ui.add(
-                        egui::Label::new(egui::RichText::new(text).font(font).color(color))
-                            .sense(sense),
-                    )
+                    let font = if lit > 0.5 {
+                        theme::bold(LINE_SIZE)
+                    } else {
+                        theme::regular(LINE_SIZE)
+                    };
+                    // A timed line with no words is the band playing on.
+                    let text = if line.text.is_empty() && lyrics.synced {
+                        "\u{266a}"
+                    } else {
+                        line.text.as_str()
+                    };
+                    let sense = if lyrics.synced {
+                        Sense::click()
+                    } else {
+                        Sense::hover()
+                    };
+                    if crate::bidi::is_rtl(text) {
+                        let galley = crate::bidi::layout(
+                            ui.painter(),
+                            text,
+                            font,
+                            color,
+                            wrap,
+                            usize::MAX,
+                            None,
+                        );
+                        ui.add(egui::Label::new(galley).sense(sense))
+                    } else {
+                        ui.add(
+                            egui::Label::new(egui::RichText::new(text).font(font).color(color))
+                                .sense(sense),
+                        )
+                    }
                 };
                 crate::autoscroll::row(ui, &response);
                 let rect = response.rect;
@@ -284,6 +677,7 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
                 }
                 ui.add_space(LINE_GAP);
             }
+            attribution(ui, &lyrics, &palette, app.locale);
             // Words without timing can only be followed by the clock: sit
             // at the part of the text the song is probably at.
             if app.lyrics_following && !lyrics.synced && now.duration_ms > 0 {
@@ -311,6 +705,7 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
     {
         app.lyrics_following = false;
     }
+    request_word_repaint(ui.ctx(), &now, &lyrics);
     app.lyrics_line_shown = Some(active);
 }
 
@@ -930,28 +1325,55 @@ fn fullscreen_contents(app: &mut App, ui: &mut egui::Ui) {
                     1.0
                 };
                 let wrap = ui.available_width() / SUNG_LINE_GROWTH * grown;
-                let font = theme::bold(size * grown);
-                // A timed line with no words is the band playing on.
-                let text = if line.text.is_empty() && lyrics.synced {
-                    "\u{266a}"
-                } else {
-                    line.text.as_str()
-                };
-                // Untimed words have nowhere to jump to, but a click on them
-                // is still on a line, so it must not reach the backdrop.
-                let sense = Sense::click();
-                let galley =
-                    crate::bidi::layout(ui.painter(), text, font, color, wrap, usize::MAX, None);
-                let center = ui.cursor().top() + galley.size().y * 0.5;
+                let top = ui.cursor().top();
+                let center = top + size * grown * 0.5;
                 let edge = ((center - viewport.top()).min(viewport.bottom() - center)
                     / (size * 2.0))
                     .clamp(0.0, 1.0);
-                let response = ui
-                    .scope(|ui| {
-                        ui.multiply_opacity(edge * edge * (3.0 - 2.0 * edge));
+                let opacity = edge * edge * (3.0 - 2.0 * edge);
+                let response = if word_line(line) {
+                    let base = if is_active { palette.secondary } else { quiet };
+                    ui.scope(|ui| {
+                        ui.multiply_opacity(opacity);
+                        paint_word_line(
+                            ui,
+                            line,
+                            now.position_ms,
+                            is_active,
+                            theme::bold(size * grown),
+                            base,
+                            palette.text,
+                            wrap,
+                        )
+                        .0
+                    })
+                    .inner
+                } else {
+                    // A timed line with no words is the band playing on.
+                    let text = if line.text.is_empty() && lyrics.synced {
+                        "\u{266a}"
+                    } else {
+                        line.text.as_str()
+                    };
+                    // Untimed words have nowhere to jump to, but a click on
+                    // them is still on a line, so it must not reach the
+                    // backdrop.
+                    let sense = Sense::click();
+                    let galley = crate::bidi::layout(
+                        ui.painter(),
+                        text,
+                        theme::bold(size * grown),
+                        color,
+                        wrap,
+                        usize::MAX,
+                        None,
+                    );
+                    ui.scope(|ui| {
+                        ui.multiply_opacity(opacity);
                         ui.add(egui::Label::new(galley).sense(sense))
                     })
-                    .inner;
+                    .inner
+                };
                 let rect = response.rect;
                 if lyrics.synced
                     && response.clicked()
@@ -965,6 +1387,7 @@ fn fullscreen_contents(app: &mut App, ui: &mut egui::Ui) {
                 }
                 ui.add_space(27.0);
             }
+            attribution(ui, &lyrics, &palette, app.locale);
             // Words without timing can only be followed by the clock: sit
             // at the part of the text the song is probably at.
             if following && !lyrics.synced && now.duration_ms > 0 {
@@ -1001,11 +1424,55 @@ fn fullscreen_contents(app: &mut App, ui: &mut egui::Ui) {
                 next - now.position_ms,
             )));
     }
+    request_word_repaint(ui.ctx(), &now, &lyrics);
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{fullscreen_content_width, preferred_backdrop_art};
+    use super::{
+        fullscreen_content_width, joined_text, joined_transliteration, preferred_backdrop_art,
+    };
+    use crate::lyrics::Syllable;
+
+    fn syllable(text: &str, part_of_word: bool) -> Syllable {
+        Syllable {
+            text: text.into(),
+            part_of_word,
+            ..Syllable::default()
+        }
+    }
+
+    #[test]
+    fn a_word_keeps_together_however_many_syllables_it_has() {
+        let syllables = [
+            syllable("He", true),
+            syllable("ll", true),
+            syllable("o", false),
+            syllable("there", false),
+        ];
+        assert_eq!(joined_text(&syllables), "Hello there");
+    }
+
+    #[test]
+    fn a_transliteration_uses_its_own_word_markers() {
+        let mut syllables = [
+            syllable("こ", true),
+            syllable("ん", true),
+            syllable("に", false),
+            syllable("ち", false),
+            syllable("は", false),
+        ];
+        for (index, text) in ["ko", "n", "ni", "chi", "wa"].into_iter().enumerate() {
+            syllables[index].transliterated = Some(text.into());
+            syllables[index].transliterated_part_of_word = Some(index != 2);
+        }
+        // The text is one word, but this romanisation marks a word break
+        // after "n", so the marker decides the space.
+        assert_eq!(
+            joined_transliteration(&syllables).as_deref(),
+            Some("konni chiwa")
+        );
+    }
 
     #[test]
     fn fullscreen_backdrop_prefers_small_art_with_large_art_as_fallback() {

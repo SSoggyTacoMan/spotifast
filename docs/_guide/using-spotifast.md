@@ -824,6 +824,23 @@ from LRCLIB by its artist, title, album and length.
 Synced lyrics follow the playing line automatically. Scroll to pause following,
 choose **Follow** to resume it, or choose a line to jump to that part of the song.
 
+Word-synced lyrics follow each word and fill it in as it is sung, as Spotify's
+own panel does. Spotifast asks for them only when you have a free
+[Spicy Lyrics API key](https://developers.spicylyrics.org), which community
+syncers share under the API's attribution terms. Set the key in Spotifast's
+environment before starting it:
+
+```
+SPICY_LYRICS_KEY=your-key spotifast
+```
+
+The API's own docs call the variable `SPICY_LYRICS_SECRET_KEY`; either name
+works. Without a key, or when Spicy Lyrics has no sync for the song, Spotify
+and LRCLIB answer as before. Spicy answers are cached for 30 days. When Spicy
+Lyrics answers, the end of the panel credits the provider and the people who
+uploaded and made the sync, along with the song's writers; those credits are a
+condition of using the API.
+
 The expand button in the lyrics panel or at the right of the player bar, or
 **F** when no text field has focus, opens lyrics in full screen. A narrow
 window has no room for the player bar's button. Press **F** or **Esc**, or

@@ -976,6 +976,9 @@ pub enum Command {
 pub struct LyricsRequest {
     /// The track the answer is for, so a stale one is ignored.
     pub uri: String,
+    /// Spotify's track id, when there is one. Spicy Lyrics looks tracks up
+    /// by id; other sync sources use the query.
+    pub track_id: Option<String>,
     pub query: crate::lyrics::Query,
     /// The local file a `spotify:local:` track plays from, whose own
     /// lyrics come before LRCLIB's.
@@ -4769,9 +4772,10 @@ impl Worker {
         let cache_dir = self.dirs.lyrics_cache_dir();
         let engine = self.engine.clone();
         tokio::spawn(async move {
-            // A local file's own words go first, then Spotify's: they
-            // follow the recording exactly. Everything else, a signed-out
-            // session included, falls back to LRCLIB.
+            // A local file's own words go first. Then Spicy Lyrics, which is
+            // the only source with timing inside a line, if a key is set.
+            // Spotify's transcription follows, and everything else, a
+            // signed-out session included, falls back to LRCLIB.
             let own = match request.local_file {
                 Some(file) => tokio::task::spawn_blocking(move || crate::local_tags::lyrics(&file))
                     .await
@@ -4779,7 +4783,14 @@ impl Worker {
                     .flatten(),
                 None => None,
             };
-            let exact = match own {
+            let word_synced = match (request.track_id.as_deref(), http.as_ref()) {
+                (Some(id), Ok(client)) => crate::lyrics::fetch_spicy(client, &cache_dir, id)
+                    .await
+                    .ok()
+                    .flatten(),
+                _ => None,
+            };
+            let exact = match own.or(word_synced) {
                 Some(found) => Some(found),
                 None => spotify_lyrics(engine, &request.uri, &cache_dir).await,
             };

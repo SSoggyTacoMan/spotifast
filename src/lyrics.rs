@@ -16,6 +16,10 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 
+mod spicy;
+
+pub use spicy::{attribution_title, fetch_spicy};
+
 const API: &str = "https://lrclib.net/api";
 /// Lyrics do not change; a cached answer is good for this long.
 const CACHE_LIFETIME: Duration = Duration::from_secs(30 * 24 * 60 * 60);
@@ -44,11 +48,109 @@ pub struct Query {
     pub duration_ms: u32,
 }
 
+/// One timed piece of a line, usually a syllable or a whole word.
+///
+/// Spotifast's own formats (LRC, Spotify, local tags) leave lines whole, so
+/// these are only present on word-synced lyrics. Every field added after the
+/// first cached format is optional and defaults, keeping old cache files
+/// readable.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Syllable {
+    pub at_ms: u32,
+    /// When the syllable stops sounding. Zero when the source omitted it.
+    #[serde(default)]
+    pub end_ms: u32,
+    pub text: String,
+    #[serde(default)]
+    pub transliterated: Option<String>,
+    /// The next syllable continues this word, so no space goes between them.
+    #[serde(default)]
+    pub part_of_word: bool,
+    /// The same marker for `transliterated`, which can split words where the
+    /// original text does not, as Japanese does. Falls back to `part_of_word`
+    /// when the source never said.
+    #[serde(default)]
+    pub transliterated_part_of_word: Option<bool>,
+}
+
+impl Syllable {
+    /// How much of the syllable has been sung at `position_ms`, from 0 to 1.
+    pub fn progress(&self, position_ms: u32) -> f32 {
+        span_progress(self.at_ms, self.end_ms, position_ms)
+    }
+}
+
+/// How much of a timed span has played at `position_ms`, from 0 to 1.
+pub fn span_progress(at_ms: u32, end_ms: u32, position_ms: u32) -> f32 {
+    if position_ms <= at_ms {
+        return 0.0;
+    }
+    if end_ms <= at_ms {
+        return 1.0;
+    }
+    ((position_ms - at_ms) as f32 / (end_ms - at_ms) as f32).clamp(0.0, 1.0)
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Line {
     /// When the line starts; `None` in lyrics that carry no timing.
     pub at_ms: Option<u32>,
     pub text: String,
+    /// When the line stops sounding; `None` when the source omitted it.
+    #[serde(default)]
+    pub end_ms: Option<u32>,
+    /// Word-level timing, empty on line-synced and plain lyrics.
+    #[serde(default)]
+    pub syllables: Vec<Syllable>,
+    /// Backing vocals sung under this line.
+    #[serde(default)]
+    pub background: Vec<Syllable>,
+    /// A duet line sung by the other side of the conversation.
+    #[serde(default)]
+    pub opposite_aligned: bool,
+    #[serde(default)]
+    pub transliterated: Option<String>,
+    #[serde(default)]
+    pub translated: Option<String>,
+}
+
+impl Line {
+    /// A line with timing only; the source had no word-level detail.
+    pub fn new(at_ms: Option<u32>, text: impl Into<String>) -> Self {
+        Self {
+            at_ms,
+            text: text.into(),
+            ..Self::default()
+        }
+    }
+
+    /// Whether this line has word-level timing to animate.
+    pub fn has_syllables(&self) -> bool {
+        !self.syllables.is_empty()
+    }
+}
+
+/// A person credited for a community sync, and where to find them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Credit {
+    pub name: String,
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
+/// Where word-synced lyrics came from, and who made them.
+///
+/// [Spicy Lyrics' terms](https://developers.spicylyrics.org/docs/attribution)
+/// require the provider to be shown with the lyrics and, for community
+/// syncs, the uploader and maker as well.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Attribution {
+    /// `spicy_lyrics`, `apple_music`, `spotify`, or another source name.
+    pub source: String,
+    #[serde(default)]
+    pub uploader: Option<Credit>,
+    #[serde(default)]
+    pub maker: Option<Credit>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,6 +160,11 @@ pub struct Lyrics {
     pub synced: bool,
     /// The database knows there are no words.
     pub instrumental: bool,
+    /// Present on lyrics fetched from Spicy Lyrics.
+    #[serde(default)]
+    pub attribution: Option<Attribution>,
+    #[serde(default)]
+    pub song_writers: Vec<String>,
 }
 
 impl Lyrics {
@@ -71,6 +178,11 @@ impl Lyrics {
             .lines
             .partition_point(|line| line.at_ms.is_some_and(|at| at <= position_ms));
         started.checked_sub(1)
+    }
+
+    /// Whether any line carries word-level timing.
+    pub fn word_synced(&self) -> bool {
+        self.lines.iter().any(Line::has_syllables)
     }
 }
 
@@ -96,10 +208,7 @@ pub fn from_spotify(json: &serde_json::Value) -> Option<Lyrics> {
                         .or_else(|| value.as_u64().and_then(|n| u32::try_from(n).ok()))
                 })
                 .filter(|_| synced);
-            Some(Line {
-                at_ms,
-                text: text.to_string(),
-            })
+            Some(Line::new(at_ms, text))
         })
         .collect();
     if lines.is_empty() {
@@ -110,6 +219,7 @@ pub fn from_spotify(json: &serde_json::Value) -> Option<Lyrics> {
         lines,
         synced,
         instrumental: false,
+        ..Lyrics::default()
     })
 }
 
@@ -359,6 +469,7 @@ impl Record {
                     lines,
                     synced: true,
                     instrumental: false,
+                    ..Lyrics::default()
                 });
             }
         }
@@ -366,13 +477,11 @@ impl Record {
         Some(Lyrics {
             lines: plain
                 .lines()
-                .map(|line| Line {
-                    at_ms: None,
-                    text: line.trim_end().to_string(),
-                })
+                .map(|line| Line::new(None, line.trim_end()))
                 .collect(),
             synced: false,
             instrumental: false,
+            ..Lyrics::default()
         })
     }
 }
@@ -657,19 +766,18 @@ pub fn from_text(text: &str) -> Option<Lyrics> {
             lines: timed,
             synced: true,
             instrumental: false,
+            ..Lyrics::default()
         });
     }
     Some(Lyrics {
         lines: text
             .trim()
             .lines()
-            .map(|line| Line {
-                at_ms: None,
-                text: line.trim_end().to_string(),
-            })
+            .map(|line| Line::new(None, line.trim_end()))
             .collect(),
         synced: false,
         instrumental: false,
+        ..Lyrics::default()
     })
 }
 
@@ -692,10 +800,7 @@ pub fn parse_lrc(text: &str) -> Vec<Line> {
         }
         let body = rest.trim();
         for at_ms in times {
-            lines.push(Line {
-                at_ms: Some(at_ms),
-                text: body.to_string(),
-            });
+            lines.push(Line::new(Some(at_ms), body));
         }
     }
     lines.sort_by_key(|line| line.at_ms);
@@ -1063,6 +1168,7 @@ mod tests {
             lines: parse_lrc("[00:05]a\n[00:10]b\n[00:15]c"),
             synced: true,
             instrumental: false,
+            ..Lyrics::default()
         };
         assert_eq!(lyrics.active_line(0), None);
         assert_eq!(lyrics.active_line(5_000), Some(0));
@@ -1072,6 +1178,7 @@ mod tests {
             lines: vec![Line::default()],
             synced: false,
             instrumental: false,
+            ..Lyrics::default()
         };
         assert_eq!(plain.active_line(5_000), None);
     }
