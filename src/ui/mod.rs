@@ -121,8 +121,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 
 /// The main window's narrowest width with these panels open: their least
 /// widths and the page's.
-fn main_min_width(page: f32, sidebar: bool, right_panel: bool) -> f32 {
-    let sidebar = if sidebar { SIDEBAR_MIN_WIDTH } else { 0.0 };
+fn main_min_width(page: f32, sidebar: f32, right_panel: bool) -> f32 {
     let right = if right_panel {
         theme::SIDE_PANEL_MIN_WIDTH
     } else {
@@ -148,9 +147,18 @@ fn keep_room_for_panels(app: &App, ctx: &Context) {
         return;
     }
     let panels = app.lyrics_fullscreen.is_none();
+    let sidebar = if panels && app.settings.sidebar_visible {
+        if app.settings.sidebar_rail {
+            sidebar::RAIL_MIN_WIDTH
+        } else {
+            SIDEBAR_MIN_WIDTH
+        }
+    } else {
+        0.0
+    };
     let width = main_min_width(
         topbar::least_width(ctx),
-        panels && app.settings.sidebar_visible,
+        sidebar,
         panels && (app.show_queue_panel || app.show_lyrics_panel || app.show_friends_panel),
     )
     .round();

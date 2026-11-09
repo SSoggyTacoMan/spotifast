@@ -13424,6 +13424,11 @@ impl App {
                 self.settings.sidebar_visible = !self.settings.sidebar_visible;
                 self.settings_dirty = true;
             }
+            Action::SetSidebarRail(rail) => {
+                self.settings.sidebar_rail = rail;
+                self.settings.sidebar_visible = true;
+                self.settings_dirty = true;
+            }
             Action::ToggleQueuePanel => {
                 self.show_queue_panel = !self.show_queue_panel;
                 if self.show_queue_panel {

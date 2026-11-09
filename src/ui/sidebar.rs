@@ -11,6 +11,9 @@ use crate::theme::{self, Icon, Palette};
 
 const DEFAULT_ROW_HEIGHT: f32 = 60.0;
 const COMPACT_ROW_HEIGHT: f32 = 32.0;
+/// The cover rail's width, and the least it may be squeezed to.
+pub(crate) const RAIL_WIDTH: f32 = 76.0;
+pub(crate) const RAIL_MIN_WIDTH: f32 = 64.0;
 
 struct Entry {
     image: Option<String>,
@@ -541,7 +544,8 @@ fn permute<T>(entries: &mut [T], order: &[usize]) {
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let palette = app.palette;
-    let expanded_art = has_expanded_art(app);
+    let rail = app.settings.sidebar_rail;
+    let expanded_art = !rail && has_expanded_art(app);
     let floating_art = app.settings.sidebar_grid && expanded_art;
     // The traffic lights float over the top-left of the sidebar now, so the
     // first nav row has to start below them.
@@ -553,44 +557,239 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     } else {
         0.0
     };
+    let (range, chosen) = if rail {
+        (RAIL_MIN_WIDTH..=96.0, RAIL_WIDTH)
+    } else {
+        (super::SIDEBAR_MIN_WIDTH..=600.0, app.settings.sidebar_width)
+    };
     let fit = super::yielding_panel(
         ui.ctx(),
         "sidebar",
-        super::SIDEBAR_MIN_WIDTH..=600.0,
-        app.settings.sidebar_width,
+        range,
+        chosen,
         ui.available_width() - super::topbar::least_width(ui.ctx()) - beside,
     );
     let panel = egui::Panel::left("sidebar")
-        .resizable(true)
-        .default_size(app.settings.sidebar_width)
+        .resizable(!rail)
+        .default_size(chosen)
         .size_range(fit.range.clone())
         .show_separator_line(false)
         .frame(Frame::new().fill(palette.panel).inner_margin(Margin {
-            left: 12,
-            right: 8,
+            left: if rail { 4 } else { 12 },
+            right: if rail { 4 } else { 8 },
             top,
             bottom: if expanded_art { 0 } else { 8 },
         }));
     let response = panel.show(ui, |ui| {
-        let art_rect = expanded_art.then(|| expanded_art_rect(ui));
-        if let Some(rect) = art_rect.filter(|_| !floating_art) {
-            reserve_expanded_art(ui, rect);
-        }
-        contents(app, ui, art_rect.filter(|_| floating_art));
-        if let Some(rect) = art_rect {
-            if floating_art {
-                paint_grid_art_mask(app, ui, rect);
+        if rail {
+            rail_contents(app, ui);
+        } else {
+            let art_rect = expanded_art.then(|| expanded_art_rect(ui));
+            if let Some(rect) = art_rect.filter(|_| !floating_art) {
+                reserve_expanded_art(ui, rect);
             }
-            paint_expanded_art(app, ui, rect);
+            contents(app, ui, art_rect.filter(|_| floating_art));
+            if let Some(rect) = art_rect {
+                if floating_art {
+                    paint_grid_art_mask(app, ui, rect);
+                }
+                paint_expanded_art(app, ui, rect);
+            }
         }
     });
     let width = response.response.rect.width();
-    if (width - app.settings.sidebar_width).abs() > 1.0
+    if !rail
+        && (width - app.settings.sidebar_width).abs() > 1.0
         && super::panel_width_chosen(ui.ctx(), "sidebar", &fit)
     {
         app.settings.sidebar_width = width;
         app.actions.push(Action::SettingsChanged);
     }
+}
+
+/// A library entry as the cover rail draws it.
+struct RailEntry {
+    image: Option<String>,
+    label: String,
+    page: Page,
+    round: bool,
+    icon: Option<Icon>,
+}
+
+/// The first few things in the library, enough to identify it at a glance.
+fn rail_entries(app: &App) -> Vec<RailEntry> {
+    let mut entries = vec![RailEntry {
+        image: None,
+        label: gettext(app.locale, "Liked Songs").into_owned(),
+        page: Page::LikedSongs,
+        round: false,
+        icon: Some(Icon::HeartFilled),
+    }];
+    if let Some(playlists) = app.library.playlists.get() {
+        for playlist in playlists.iter().take(16) {
+            entries.push(RailEntry {
+                image: pick_image(&playlist.images, 64).map(str::to_string),
+                label: playlist.name.clone(),
+                page: Page::Playlist(playlist.id.clone()),
+                round: false,
+                icon: None,
+            });
+        }
+    }
+    for saved in app.library.albums.items.iter().take(8) {
+        entries.push(RailEntry {
+            image: pick_image(&saved.album.images, 64).map(str::to_string),
+            label: saved.album.name.clone(),
+            page: Page::Album(saved.album.id.clone()),
+            round: false,
+            icon: None,
+        });
+    }
+    for artist in app.library.artists.items.iter().take(8) {
+        entries.push(RailEntry {
+            image: pick_image(&artist.images, 64).map(str::to_string),
+            label: artist.name.clone(),
+            page: Page::Artist(artist.id.clone()),
+            round: true,
+            icon: None,
+        });
+    }
+    entries
+}
+
+/// Navigation and covers, in the narrow column Spotify keeps on the left.
+fn rail_contents(app: &mut App, ui: &mut egui::Ui) {
+    let palette = app.palette;
+    let locale = app.locale;
+    let page = app.page().clone();
+    ui.add_space(4.0);
+    if rail_button(
+        ui,
+        &palette,
+        Icon::House,
+        page == Page::Home,
+        &gettext(locale, "Home"),
+    )
+    .clicked()
+    {
+        app.actions.push(Action::Open(Page::Home));
+    }
+    if rail_button(
+        ui,
+        &palette,
+        Icon::Search,
+        page == Page::Search,
+        &gettext(locale, "Search"),
+    )
+    .clicked()
+    {
+        app.actions.push(Action::FocusSearch);
+    }
+    if rail_button(
+        ui,
+        &palette,
+        Icon::Library,
+        false,
+        &gettext(locale, "Open Your Library"),
+    )
+    .clicked()
+    {
+        app.actions.push(Action::SetSidebarRail(false));
+    }
+    ui.add_space(4.0);
+    ui.painter().hline(
+        ui.max_rect().x_range().shrink(8.0),
+        ui.cursor().top(),
+        egui::Stroke::new(1.0, palette.outline),
+    );
+    ui.add_space(8.0);
+    let entries = rail_entries(app);
+    egui::ScrollArea::vertical()
+        .id_salt("sidebar-rail")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            for (index, entry) in entries.iter().enumerate() {
+                let (row, _) =
+                    ui.allocate_exact_size(vec2(ui.available_width(), 56.0), egui::Sense::hover());
+                let rect = Rect::from_center_size(row.center(), Vec2::splat(48.0));
+                let response = ui.interact(
+                    rect,
+                    egui::Id::new(("sidebar-rail-entry", index)),
+                    egui::Sense::click(),
+                );
+                if ui.is_rect_visible(rect) {
+                    if let Some(url) = entry.image.as_deref() {
+                        super::widgets::paint_cover(
+                            ui,
+                            &palette,
+                            Some(url),
+                            rect,
+                            if entry.round { 24.0 } else { 6.0 },
+                            Icon::Music,
+                            Some(app.backend.art()),
+                        );
+                    } else {
+                        ui.painter().rect_filled(
+                            rect,
+                            if entry.round { 24.0 } else { 6.0 },
+                            palette.surface,
+                        );
+                        if let Some(icon) = entry.icon {
+                            theme::paint_icon(ui, icon, rect, 20.0, palette.secondary);
+                        }
+                    }
+                    if page == entry.page {
+                        ui.painter().rect_stroke(
+                            rect.expand(2.0),
+                            if entry.round { 26.0 } else { 8.0 },
+                            egui::Stroke::new(2.0, palette.text),
+                            egui::StrokeKind::Outside,
+                        );
+                    }
+                }
+                if response.clicked() {
+                    app.actions.push(Action::Open(entry.page.clone()));
+                }
+                response.on_hover_text(&entry.label);
+                ui.add_space(2.0);
+            }
+        });
+}
+
+/// One round navigation button in the rail.
+fn rail_button(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    icon: Icon,
+    active: bool,
+    label: &str,
+) -> egui::Response {
+    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 44.0), egui::Sense::hover());
+    let rect = Rect::from_center_size(row.center(), Vec2::splat(40.0));
+    let response = ui.interact(
+        rect,
+        egui::Id::new(("sidebar-rail-button", label)),
+        egui::Sense::click(),
+    );
+    let foreground = if active || response.hovered() {
+        palette.text
+    } else {
+        palette.secondary
+    };
+    if active || response.hovered() {
+        ui.painter().rect_filled(
+            rect,
+            10.0,
+            if active {
+                palette.surface_active
+            } else {
+                palette.surface
+            },
+        );
+    }
+    theme::paint_icon(ui, icon, rect, 22.0, foreground);
+    theme::focus_ring(ui, &response);
+    response.on_hover_text(label)
 }
 
 fn expanded_art_rect(ui: &egui::Ui) -> Rect {
@@ -1087,7 +1286,7 @@ fn contents(app: &mut App, ui: &mut egui::Ui, grid_art: Option<Rect>) {
             ui.spacing_mut().item_spacing.x = 2.0;
             if theme::icon_button(
                 ui,
-                Icon::PanelLeft,
+                Icon::X,
                 16.0,
                 palette.secondary,
                 palette.text,
@@ -1099,6 +1298,21 @@ fn contents(app: &mut App, ui: &mut egui::Ui, grid_art: Option<Rect>) {
             .clicked()
             {
                 app.actions.push(Action::ToggleSidebar);
+            }
+            // Folding to the rail is a second way out; keep it only where
+            // the heading still has room beside it.
+            if ui.available_width() >= 180.0
+                && theme::icon_button(
+                    ui,
+                    Icon::PanelLeft,
+                    16.0,
+                    palette.secondary,
+                    palette.text,
+                    &gettext(locale, "Collapse to cover rail"),
+                )
+                .clicked()
+            {
+                app.actions.push(Action::SetSidebarRail(true));
             }
             let grid = app.settings.sidebar_grid;
             let (icon, label) = if grid {

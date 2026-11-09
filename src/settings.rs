@@ -324,6 +324,12 @@ pub struct Settings {
     pub volume: u16,
     /// Whether the library sidebar is visible.
     pub sidebar_visible: bool,
+    /// Show the compact cover rail instead of the full library. The full
+    /// library stays the default, as before; the panel button in its header
+    /// folds it into the rail, and the Library button in the rail opens it
+    /// again.
+    #[serde(default = "default_sidebar_rail")]
+    pub sidebar_rail: bool,
     /// The playing album's art docked large at the sidebar's bottom.
     pub art_expanded: bool,
     /// Use compact single-line rows without cover art in the sidebar.
@@ -513,6 +519,7 @@ impl Default for Settings {
             visualizer_fps: crate::milkdrop::DEFAULT_FPS,
             volume: (u16::MAX as u32 * 70 / 100) as u16,
             sidebar_visible: true,
+            sidebar_rail: default_sidebar_rail(),
             art_expanded: false,
             sidebar_compact: false,
             sidebar_grid: false,
@@ -580,6 +587,11 @@ impl Default for Settings {
             proxy_password_legacy: false,
         }
     }
+}
+
+/// The rail is a way to fold the library, not a new default.
+fn default_sidebar_rail() -> bool {
+    false
 }
 
 fn default_buffer_ms() -> u32 {
@@ -1323,6 +1335,20 @@ mod tests {
     fn older_settings_keep_the_sidebar_visible() {
         let settings: Settings = serde_json::from_str("{}").unwrap();
         assert!(settings.sidebar_visible);
+    }
+
+    #[test]
+    fn the_cover_rail_is_opt_in_and_round_trips() {
+        let old: Settings = serde_json::from_str("{}").unwrap();
+        assert!(!old.sidebar_rail);
+
+        let settings = Settings {
+            sidebar_rail: true,
+            ..Settings::default()
+        };
+        let json = serde_json::to_string(&settings).unwrap();
+        let restored: Settings = serde_json::from_str(&json).unwrap();
+        assert!(restored.sidebar_rail);
     }
 
     #[test]

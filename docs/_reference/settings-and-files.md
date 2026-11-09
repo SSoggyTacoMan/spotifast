@@ -396,6 +396,7 @@ main fields are:
 | `liked_songs_pinned` | `true` | Keep Liked Songs in the pin block; older settings place it first until moved |
 | `sidebar_compact` | `false` | Names only in the library sidebar, no covers |
 | `sidebar_grid` | `false` | Library entries as responsive cover cards instead of rows |
+| `sidebar_rail` | `false` | Fold the library into the narrow cover rail. The panel button in the library header folds it; the Library button in the rail expands it again |
 | `tracklist_compact` | `false` | One-line track rows without covers |
 | `middle_click_autoscroll` | `false` | Linux only: middle-click a list to autoscroll it. Windows always autoscrolls and macOS never does |
 | `winamp_window` | `false` | The window is the Winamp mini player |
@@ -505,6 +506,11 @@ explicit `--demo-data` directory, its `config/settings.json` and
 sound on this computer with that player bar visualizer on.
 `lyrics-fullscreen-view` and `lyrics-fullscreen-instrumental` draw full-screen
 lyrics, with words or without, at the window's own size.
+`lyrics` opens the now-playing panel with word-synced words, filling each word
+as it is sung; `lyrics-lines` shows the older line-synced panel instead.
+`lyrics-words-fullscreen-view` draws the word-synced lyrics full screen in the
+window itself, for shots at a chosen size.
+`rail` folds the library into the cover rail.
 `eq-user-presets` saves a sample equalizer preset and puts it in use.
 `start-in-tray` shows **Start with your computer** set to **In the tray**;
 demo mode never reads or changes the real login entry.

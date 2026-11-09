@@ -1770,6 +1770,8 @@ pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
                 }
             }
             "focus" => app.settings.sidebar_visible = false,
+            // The library folded into Spotify's cover rail.
+            "rail" => app.settings.sidebar_rail = true,
             // A cold start: no device is playing anything, and all the app
             // has is the song the last session ended on.
             "resume" => {

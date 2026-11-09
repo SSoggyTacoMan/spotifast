@@ -1365,6 +1365,8 @@ pub enum Action {
     /// audio. Unlike [`Action::ToggleDevicesPopup`] it never closes it.
     PlayOnAnotherDevice,
     ToggleSidebar,
+    /// Folds the library into the cover rail, or opens it.
+    SetSidebarRail(bool),
     ToggleQueuePanel,
     ToggleLyricsPanel,
     /// Show or hide what friends are listening to, in the right panel.
