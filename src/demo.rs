@@ -9177,15 +9177,15 @@ mod tests {
         }
     }
 
-    /// The line being sung sits high in the lyrics, a fifth of the way
-    /// down, in the panel and in full screen, so the lines to come fill
-    /// the view.
+    /// The line being sung sits high in the side panel, a fifth of the way
+    /// down, and a little below a third in full screen, where Spicy Lyrics
+    /// gives the words room around it.
     #[test]
     fn the_sung_line_sits_high_in_the_lyrics() {
         for fullscreen in [false, true] {
             let (ctx, mut app) = accessible_app(&format!("sung-line-{fullscreen}"));
             app.show_lyrics_panel = true;
-            app.lyrics_fullscreen = Some(fullscreen);
+            app.lyrics_fullscreen = fullscreen.then_some(false);
             app.lyrics = Loadable::Loaded(Some(sample_lyrics()));
             app.lyrics_following = true;
             let remote = app.remote.as_mut().unwrap();
@@ -9215,8 +9215,13 @@ mod tests {
                 });
             }
             let centre = centre.expect("the sung line is drawn");
+            let below_a_third = if fullscreen {
+                220.0..380.0
+            } else {
+                60.0..320.0
+            };
             assert!(
-                (60.0..320.0).contains(&centre),
+                below_a_third.contains(&centre),
                 "fullscreen {fullscreen}: the sung line is at {centre} of 800"
             );
             app.backend.shutdown();
@@ -9402,7 +9407,7 @@ mod tests {
         app.lyrics = Loadable::Loaded(Some(sample_lyrics()));
         app.lyrics_following = false;
         // Light differs from the dark palette this view is always drawn in.
-        let accent = crate::theme::Palette::light().accent;
+        let lit = egui::Color32::WHITE;
         ctx.set_theme(egui::Theme::Light);
         let mut sizes = Vec::new();
         let mut sung = None;
@@ -9422,28 +9427,34 @@ mod tests {
                 let mut output = ctx.run_ui(input, |ui| app.frame_ui(ui));
                 output.textures_delta.clear();
                 if frame == 29 {
-                    let line = output
+                    // The last matching run is the text itself: the active
+                    // line's translucent glow copies come first.
+                    let text = output
                         .shapes
                         .iter()
-                        .find_map(|shape| {
-                            if let egui::Shape::Text(text) = &shape.shape
-                                && text.galley.job.text
-                                    == "Streetlights blinking down the river road"
+                        .filter_map(|shape| match &shape.shape {
+                            egui::Shape::Text(text)
+                                if text.galley.job.text
+                                    == "Streetlights blinking down the river road" =>
                             {
-                                sung = text.galley.job.sections.first().map(|s| s.format.color);
-                                Some(text.galley.rows.len())
-                            } else {
-                                None
+                                Some(text)
                             }
+                            _ => None,
                         })
+                        .next_back()
                         .expect("the lyric line is rendered");
-                    sizes.push(line);
+                    sung = text.galley.job.sections.first().map(|s| s.format.color);
+                    sizes.push(text.galley.rows.len());
                 }
             }
         }
         app.backend.shutdown();
         assert_eq!(sizes[0], sizes[1], "highlighting must not rewrap a line");
-        assert_eq!(sung, Some(accent), "the sung line takes the theme's accent");
+        assert_eq!(
+            sung,
+            Some(lit),
+            "the sung line is lit in the theme's text colour"
+        );
     }
 
     #[test]
