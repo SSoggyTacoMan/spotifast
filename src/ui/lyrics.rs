@@ -303,6 +303,15 @@ fn attribution(
         theme::regular(11.5),
         palette.dim,
     );
+    if attribution.source.is_empty() {
+        ui.add_space(2.0);
+        theme::text(
+            ui,
+            gettext(locale, "Source unknown"),
+            theme::regular(11.0),
+            palette.dim,
+        );
+    }
     if attribution.source == "spicy_lyrics" {
         ui.add_space(2.0);
         ui.horizontal_wrapped(|ui| {

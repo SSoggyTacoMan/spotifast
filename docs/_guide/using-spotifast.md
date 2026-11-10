@@ -835,9 +835,13 @@ SPICY_LYRICS_KEY=your-key spotifast
 ```
 
 The API's own docs call the variable `SPICY_LYRICS_SECRET_KEY`; either name
-works. Without a key, or when Spicy Lyrics has no sync for the song, Spotify
-and LRCLIB answer as before. Spicy answers are cached for 30 days. When Spicy
-Lyrics answers, the end of the panel credits the provider and the people who
+works. The key stays on this computer: keep it out of source control,
+screenshots and any build you share. A build distributed to other people
+needs its own arrangement with Spicy Lyrics, such as an app template, rather
+than one shared key. Without a key, or when Spicy Lyrics has no sync for the
+song, Spotify and LRCLIB answer as before. Spicy answers are cached for 30
+days and then discarded. When Spicy Lyrics answers, the end of the panel
+credits the provider and the people who
 uploaded and made the sync, along with the song's writers; those credits are a
 condition of using the API.
 

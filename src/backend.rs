@@ -1979,6 +1979,7 @@ impl Worker {
         commands: mpsc::UnboundedSender<Command>,
         waker: Waker,
     ) -> Self {
+        crate::lyrics::purge_expired_spicy(&dirs.lyrics_cache_dir());
         Self {
             soloist_output_volume: crate::soloist::OutputVolume::default(),
             soloist: None,

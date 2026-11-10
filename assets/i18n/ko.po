@@ -6,7 +6,7 @@ msgstr ""
 "Project-Id-Version: Spotifast\n"
 "Report-Msgid-Bugs-To: https://github.com/crmne/spotifast/issues/new?"
 "template=translation.yml\n"
-"POT-Creation-Date: 2026-11-10 00:19+0100\n"
+"POT-Creation-Date: 2026-11-10 10:03+0100\n"
 "PO-Revision-Date: 2026-10-15 12:00+0900\n"
 "Last-Translator: Spotifast contributors\n"
 "Language-Team: Korean\n"
@@ -232,7 +232,7 @@ msgstr "{name}, 폴더, 펼쳐짐"
 msgid "Click to change the visualizer"
 msgstr "클릭하여 시각화 변경"
 
-#: src/ui/player_bar.rs:440 src/ui/lyrics.rs:497 src/ui/lyrics.rs:1203
+#: src/ui/player_bar.rs:440 src/ui/lyrics.rs:506 src/ui/lyrics.rs:1212
 msgid "Nothing playing"
 msgstr "재생 중인 항목 없음"
 
@@ -262,7 +262,7 @@ msgstr "셔플"
 msgid "Previous"
 msgstr "이전"
 
-#: src/ui/player_bar.rs:801 src/ui/lyrics.rs:870 src/ui/widgets.rs:3087
+#: src/ui/player_bar.rs:801 src/ui/lyrics.rs:879 src/ui/widgets.rs:3087
 #: src/ui/widgets.rs:3161 src/ui/widgets.rs:3189 src/app.rs:15245
 #: src/ui/collection.rs:997
 msgid "Loading…"
@@ -292,11 +292,11 @@ msgstr "반복 끄기"
 msgid "Playback position (%)"
 msgstr "재생 위치 (%)"
 
-#: src/ui/player_bar.rs:973 src/ui/lyrics.rs:1135
+#: src/ui/player_bar.rs:973 src/ui/lyrics.rs:1144
 msgid "Leave full screen (Esc)"
 msgstr "전체 화면 종료 (Esc)"
 
-#: src/ui/player_bar.rs:975 src/ui/lyrics.rs:413 src/ui/keys.rs:306
+#: src/ui/player_bar.rs:975 src/ui/lyrics.rs:422 src/ui/keys.rs:306
 msgid "Full screen lyrics"
 msgstr "전체 화면 가사"
 
@@ -325,7 +325,7 @@ msgstr "기기에 연결"
 msgid "Queue"
 msgstr "재생목록"
 
-#: src/ui/player_bar.rs:1099 src/ui/lyrics.rs:1124
+#: src/ui/player_bar.rs:1099 src/ui/lyrics.rs:1133
 msgid "Lyrics"
 msgstr "가사"
 
@@ -337,7 +337,7 @@ msgstr "청취 활동"
 msgid "Recent"
 msgstr "최근 항목"
 
-#: src/ui/queue.rs:92 src/ui/queue.rs:241 src/ui/lyrics.rs:401
+#: src/ui/queue.rs:92 src/ui/queue.rs:241 src/ui/lyrics.rs:410
 #: src/ui/friends.rs:65 src/ui/mod.rs:692 src/window.rs:35
 msgid "Close"
 msgstr "닫기"
@@ -354,7 +354,7 @@ msgstr "재생목록 지우기"
 msgid "Playing from"
 msgstr "재생 출처"
 
-#: src/ui/queue.rs:409 src/ui/lyrics.rs:390
+#: src/ui/queue.rs:409 src/ui/lyrics.rs:399
 msgid "Now playing"
 msgstr "지금 재생 중"
 
@@ -393,29 +393,33 @@ msgstr "재생한 곡이 여기에 표시됩니다."
 msgid "Load more"
 msgstr "더 불러오기"
 
-#: src/ui/lyrics.rs:312
+#: src/ui/lyrics.rs:310
+msgid "Source unknown"
+msgstr "출처 알 수 없음"
+
+#: src/ui/lyrics.rs:321
 msgid "Uploaded by"
 msgstr "업로드:"
 
-#: src/ui/lyrics.rs:315
+#: src/ui/lyrics.rs:324
 msgid "Made by"
 msgstr "제작:"
 
-#: src/ui/lyrics.rs:340
+#: src/ui/lyrics.rs:349
 #, rust-format
 msgid "Written by {names}"
 msgstr "작사·작곡: {names}"
 
-#: src/ui/lyrics.rs:425 src/ui/lyrics.rs:1147
+#: src/ui/lyrics.rs:434 src/ui/lyrics.rs:1156
 msgctxt "lyrics"
 msgid "Follow"
 msgstr "따라가기"
 
-#: src/ui/lyrics.rs:498 src/ui/lyrics.rs:1204
+#: src/ui/lyrics.rs:507 src/ui/lyrics.rs:1213
 msgid "Play a song to see its lyrics."
 msgstr "가사를 보려면 곡을 재생하세요."
 
-#: src/ui/lyrics.rs:509 src/ui/lyrics.rs:526 src/ui/artist.rs:325
+#: src/ui/lyrics.rs:518 src/ui/lyrics.rs:535 src/ui/artist.rs:325
 #: src/ui/artist.rs:353 src/ui/collection.rs:782 src/ui/collection.rs:1900
 #: src/ui/collection.rs:2036 src/ui/collection.rs:2062
 #: src/ui/collection.rs:2126 src/ui/collection.rs:2243
@@ -425,7 +429,7 @@ msgstr "가사를 보려면 곡을 재생하세요."
 msgid "You're offline"
 msgstr "오프라인 상태입니다"
 
-#: src/ui/lyrics.rs:512 src/ui/lyrics.rs:529 src/ui/artist.rs:328
+#: src/ui/lyrics.rs:521 src/ui/lyrics.rs:538 src/ui/artist.rs:328
 #: src/ui/artist.rs:356 src/ui/collection.rs:785 src/ui/collection.rs:1903
 #: src/ui/collection.rs:2039 src/ui/collection.rs:2065
 #: src/ui/collection.rs:2129 src/ui/collection.rs:2246
@@ -436,30 +440,30 @@ msgid "Spotifast will reconnect automatically when your connection returns."
 msgstr "연결이 복구되면 Spotifast가 자동으로 다시 연결합니다."
 
 #. Translators: Keep {error} unchanged. It is the original failure detail.
-#: src/ui/lyrics.rs:537 src/ui/lyrics.rs:863 src/ui/lyrics.rs:1217
+#: src/ui/lyrics.rs:546 src/ui/lyrics.rs:872 src/ui/lyrics.rs:1226
 #, rust-format
 msgid "Couldn't fetch the lyrics: {error}"
 msgstr "가사를 가져오지 못했습니다: {error}"
 
-#: src/ui/lyrics.rs:543 src/ui/lyrics.rs:890 src/ui/lyrics.rs:1223
+#: src/ui/lyrics.rs:552 src/ui/lyrics.rs:899 src/ui/lyrics.rs:1232
 #: src/ui/settings.rs:432 src/ui/settings.rs:731 src/ui/soloist.rs:476
 #: src/ui/soloist.rs:695 src/ui/soloist.rs:738 src/ui/soloist.rs:953
 msgid "Try again"
 msgstr "다시 시도"
 
-#: src/ui/lyrics.rs:554 src/ui/lyrics.rs:856 src/ui/lyrics.rs:1234
+#: src/ui/lyrics.rs:563 src/ui/lyrics.rs:865 src/ui/lyrics.rs:1243
 msgid "No lyrics"
 msgstr "가사 없음"
 
-#: src/ui/lyrics.rs:555 src/ui/lyrics.rs:857 src/ui/lyrics.rs:1235
+#: src/ui/lyrics.rs:564 src/ui/lyrics.rs:866 src/ui/lyrics.rs:1244
 msgid "No lyrics found for this track."
 msgstr "이 트랙의 가사를 찾을 수 없습니다."
 
-#: src/ui/lyrics.rs:564 src/ui/lyrics.rs:852 src/ui/lyrics.rs:1244
+#: src/ui/lyrics.rs:573 src/ui/lyrics.rs:861 src/ui/lyrics.rs:1253
 msgid "Instrumental"
 msgstr "연주곡"
 
-#: src/ui/lyrics.rs:565 src/ui/lyrics.rs:853 src/ui/lyrics.rs:1245
+#: src/ui/lyrics.rs:574 src/ui/lyrics.rs:862 src/ui/lyrics.rs:1254
 msgid "No timed lyrics for this track."
 msgstr "이 트랙에는 시간 동기화된 가사가 없습니다."
 

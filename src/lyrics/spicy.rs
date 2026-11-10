@@ -97,6 +97,11 @@ async fn fetch_from(
         return Ok(None);
     }
     let path = cache_dir.join(format!("spicy-{id}.json"));
+    // The API's storage cap is hard: drop an expired answer as soon as it is
+    // seen, even when an outage means there is nothing to replace it with.
+    if older_than(&path, CACHE_LIFETIME) {
+        let _ = std::fs::remove_file(&path);
+    }
     if let Some(cached) = cached(&path) {
         return Ok(cached);
     }
@@ -342,15 +347,17 @@ impl Response {
             "Static" => body.static_lyrics(),
             _ => None,
         }?;
-        lyrics.attribution = attribution;
+        lyrics.attribution = Some(attribution);
         lyrics.song_writers = writers;
         Some(lyrics)
     }
 }
 
 impl Body {
-    fn attribution(&self) -> Option<Attribution> {
-        let source = self.source.trim().to_ascii_lowercase();
+    /// The provider always answered, so there is always something to show.
+    /// An absent source stays absent: the view says it is unknown rather
+    /// than guessing that the sync is the community's.
+    fn attribution(&self) -> Attribution {
         let uploader = self
             .upload_attribution
             .as_ref()
@@ -361,18 +368,11 @@ impl Body {
             .as_ref()
             .and_then(|attribution| attribution.maker.as_ref())
             .and_then(|credit| credit.clone().into_credit());
-        if source.is_empty() && uploader.is_none() && maker.is_none() {
-            return None;
-        }
-        Some(Attribution {
-            source: if source.is_empty() {
-                "spicy_lyrics".to_string()
-            } else {
-                source
-            },
+        Attribution {
+            source: self.source.trim().to_ascii_lowercase(),
             uploader,
             maker,
-        })
+        }
     }
 
     fn syllable_lyrics(&self) -> Option<Lyrics> {
@@ -893,8 +893,28 @@ mod tests {
                 .is_err(),
             "a copy past the cap must not be served"
         );
+        assert!(
+            !path.exists(),
+            "a copy past the cap is discarded, not left on disk"
+        );
         server.await.unwrap();
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_response_without_a_source_still_names_the_provider() {
+        let response = body(
+            r#"{"Body":{"Type":"Line","Content":[{"Text":"A","StartTime":1.0,"EndTime":2.0}]}}"#,
+        );
+        let lyrics = response.into_lyrics().unwrap();
+        let attribution = lyrics.attribution.unwrap();
+        assert!(attribution.source.is_empty());
+        assert!(attribution.uploader.is_none());
+        assert!(attribution.maker.is_none());
+        assert_eq!(
+            attribution_title(&attribution, crate::i18n::Locale::English),
+            "Lyrics from Spicy Lyrics"
+        );
     }
 
     #[test]

@@ -241,6 +241,27 @@ fn older_than(path: &Path, age: Duration) -> bool {
         .is_none_or(|elapsed| elapsed > age)
 }
 
+/// Discards Spicy Lyrics answers past the API's 30-day storage cap. Other
+/// lyric caches keep their own outage behaviour.
+pub fn purge_expired_spicy(cache_dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(cache_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_spicy = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("spicy-"));
+        if !is_spicy || !entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            continue;
+        }
+        if older_than(&path, CACHE_LIFETIME) {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
 /// Remember an answer at `path`, `None` included.
 pub fn store(path: &Path, found: &Option<Lyrics>) {
     write_cache(path, found);
@@ -1019,6 +1040,42 @@ mod tests {
                 ["/get", "/get", "/search", "/search"]
             );
         }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn expired_spicy_answers_are_deleted_without_touching_other_lyrics() {
+        let root =
+            std::env::temp_dir().join(format!("spotifast-lyrics-purge-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let stale = std::time::SystemTime::now() - CACHE_LIFETIME - Duration::from_secs(60);
+        let mut paths = Vec::new();
+        for (name, age) in [
+            ("spicy-old.json", Some(stale)),
+            ("spicy-fresh.json", None),
+            ("lrclib-old.json", Some(stale)),
+        ] {
+            let path = root.join(name);
+            store(&path, &from_text("[00:01.00] A test line"));
+            if let Some(age) = age {
+                std::fs::File::options()
+                    .write(true)
+                    .open(&path)
+                    .unwrap()
+                    .set_times(std::fs::FileTimes::new().set_modified(age))
+                    .unwrap();
+            }
+            paths.push(path);
+        }
+
+        purge_expired_spicy(&root);
+
+        assert!(!paths[0].exists(), "the stale Spicy answer is discarded");
+        assert!(paths[1].exists(), "a fresh Spicy answer is kept");
+        assert!(
+            paths[2].exists(),
+            "another source's cache keeps its own outage behaviour"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
