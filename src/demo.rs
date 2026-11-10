@@ -884,7 +884,7 @@ fn sample_lyrics() -> crate::lyrics::Lyrics {
 
 /// The same song with timing inside every line, as Spicy Lyrics answers,
 /// and the community credit its terms require.
-#[cfg(any(test, feature = "demo"))]
+#[cfg(feature = "demo")]
 fn word_sample_lyrics() -> crate::lyrics::Lyrics {
     let mut lyrics = sample_lyrics();
     let timing: Vec<u32> = lyrics.lines.iter().filter_map(|line| line.at_ms).collect();
@@ -915,7 +915,7 @@ fn word_sample_lyrics() -> crate::lyrics::Lyrics {
 
 /// A demo line with word timing, split into two syllables when a word is long
 /// enough to make the karaoke fill visible.
-#[cfg(any(test, feature = "demo"))]
+#[cfg(feature = "demo")]
 fn demo_word_line(at_ms: u32, next_at_ms: u32, text: &str) -> crate::lyrics::Line {
     let words: Vec<&str> = text.split_whitespace().collect();
     if words.is_empty() {
@@ -962,7 +962,7 @@ fn demo_word_line(at_ms: u32, next_at_ms: u32, text: &str) -> crate::lyrics::Lin
 }
 
 /// Splits a demo word in half when it is long enough for two syllables.
-#[cfg(any(test, feature = "demo"))]
+#[cfg(feature = "demo")]
 fn demo_syllables(word: &str) -> Vec<&str> {
     let count = word.chars().count();
     if count < 7 || !word.chars().all(char::is_alphabetic) {

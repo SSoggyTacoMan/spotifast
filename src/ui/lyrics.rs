@@ -72,36 +72,20 @@ fn paint_glow(
     }
 }
 
-/// A word dips, springs up and settles when it starts sounding, the way
-/// Spicy Lyrics' word spring moves: a touch small and low, a quick overshoot,
-/// then home. The timing is in the lyric clock, so seeking backwards replays
-/// the bounce and pausing freezes it where it is.
+/// A word swells and lifts smoothly as it starts sounding, then settles
+/// onto the baseline, the way Spicy Lyrics' word spring moves. The timing is
+/// in the lyric clock, so seeking backwards replays the bounce and pausing
+/// freezes it where it is.
 fn word_bounce(position_ms: u32, at_ms: u32, size: f32) -> (f32, f32) {
-    const SECONDS: f32 = 0.55;
+    const SECONDS: f32 = 0.42;
     let elapsed = position_ms.saturating_sub(at_ms) as f32 / 1000.0;
     if elapsed >= SECONDS {
         return (1.0, 0.0);
     }
     let t = (elapsed / SECONDS).clamp(0.0, 1.0);
-    let ease = |x: f32| {
-        let x = x.clamp(0.0, 1.0);
-        x * x * (3.0 - 2.0 * x)
-    };
-    let mix = |from: f32, to: f32, x: f32| from + (to - from) * ease(x);
-    // A touch smaller and lower first, an overshoot at 70%, then home.
-    let scale = if t < 0.7 {
-        mix(0.95, 1.05, t / 0.7)
-    } else {
-        mix(1.05, 1.0, (t - 0.7) / 0.3)
-    };
-    // In em, positive is down: wait a hair low, lift just past the baseline,
-    // then settle back onto it.
-    let offset = if t < 0.9 {
-        mix(0.01, -1.0 / 60.0, t / 0.9)
-    } else {
-        mix(-1.0 / 60.0, 0.0, (t - 0.9) / 0.1)
-    };
-    (scale, offset * size)
+    let wave = (t * std::f32::consts::PI).sin();
+    let ease = wave * (1.0 - t * 0.4);
+    (1.0 + 0.08 * ease, -size * 0.07 * ease)
 }
 
 /// Paints one galley with a scale-and-lift around `pivot`.
@@ -422,15 +406,26 @@ fn paint_word_line(
             if lifted {
                 clip = Rect::from_min_max(transform.mul_pos(clip.min), transform.mul_pos(clip.max));
             }
-            let clipped = painter.with_clip_rect(clip.intersect(rect));
             if let Some(glow_galley) = &piece.glow {
-                let radius = (font.size * 0.075).clamp(1.0, 2.6);
+                let radius = (font.size * 0.08).clamp(1.2, 2.5);
+                let glow_clip = clip.expand2(vec2(radius + 1.0, radius + 1.0));
+                let clipped_glow = painter.with_clip_rect(glow_clip.intersect(rect));
                 if lifted {
-                    paint_lifted_glow(&clipped, pos, glow_galley, glow, pivot, scale, lift, radius);
+                    paint_lifted_glow(
+                        &clipped_glow,
+                        pos,
+                        glow_galley,
+                        glow,
+                        pivot,
+                        scale,
+                        lift,
+                        radius,
+                    );
                 } else {
-                    paint_glow(&clipped, pos, glow_galley, glow, radius);
+                    paint_glow(&clipped_glow, pos, glow_galley, glow, radius);
                 }
             }
+            let clipped = painter.with_clip_rect(clip.intersect(rect));
             if lifted {
                 paint_lifted(&clipped, pos, bright.clone(), fill, pivot, scale, lift);
             } else {
@@ -686,50 +681,40 @@ fn request_word_repaint(ctx: &egui::Context, now: &crate::app::NowPlaying, lyric
     }
 }
 
-/// A quiet wash of the cover behind the side panel. In the light theme the
-/// art would fight the small type, so it gets only a soft surface gradient.
+/// A rich blurred artwork backdrop with dark overlay and ambient color orbs,
+/// exactly like fullscreen lyrics. Lyrics are an immersive media surface and
+/// stay dark and vibrant in both light and dark desktop themes.
 fn panel_background(app: &mut App, ui: &egui::Ui) {
-    let palette = app.palette;
     let rect = ui.max_rect();
-    if palette.dark {
-        let art = app
-            .now_playing()
-            .and_then(|now| preferred_backdrop_art(now.art_small, now.art_url));
-        if let Some(texture) =
-            app.lyrics_backdrop
-                .texture(ui.ctx(), app.backend.art(), art.as_deref())
-        {
-            ui.painter().with_clip_rect(rect).image(
-                texture.id(),
-                rect,
-                cover_uv(rect.size(), texture.size_vec2()),
-                Color32::from_gray(46),
-            );
-        }
-        ui.painter()
-            .rect_filled(rect, 0.0, Color32::from_black_alpha(112));
-        widgets::paint_vertical_gradient(
-            ui,
+    let art = app
+        .now_playing()
+        .and_then(|now| preferred_backdrop_art(now.art_small, now.art_url));
+    if let Some(texture) =
+        app.lyrics_backdrop
+            .texture(ui.ctx(), app.backend.art(), art.as_deref())
+    {
+        ui.painter().with_clip_rect(rect).image(
+            texture.id(),
             rect,
-            Color32::from_black_alpha(0),
-            Color32::from_black_alpha(70),
+            cover_uv(rect.size(), texture.size_vec2()),
+            Color32::from_gray(160),
         );
-    } else {
-        widgets::paint_vertical_gradient(
-            ui,
-            rect,
-            palette.surface.gamma_multiply(0.72),
-            palette.panel,
-        );
-        return;
     }
+    ui.painter()
+        .rect_filled(rect, 0.0, Color32::from_black_alpha(135));
     let colors = playing_colors(app);
     let playing = app.now_playing().is_some_and(|now| now.playing);
-    paint_ambient(ui, rect, &colors, 12, playing);
+    paint_ambient(ui, rect, &colors, 22, playing);
+    widgets::paint_vertical_gradient(
+        ui,
+        rect,
+        Color32::from_black_alpha(20),
+        Color32::from_black_alpha(100),
+    );
 }
 
 pub fn side_panel(app: &mut App, ui: &mut egui::Ui) {
-    let palette = app.palette;
+    let palette = theme::Palette::dark();
     let fit = super::yielding_panel(
         ui.ctx(),
         "lyrics-panel",
@@ -744,10 +729,11 @@ pub fn side_panel(app: &mut App, ui: &mut egui::Ui) {
         .show_separator_line(false)
         .frame(
             Frame::new()
-                .fill(palette.panel)
-                .inner_margin(Margin::symmetric(12, 12)),
+                .fill(Color32::from_rgb(18, 18, 20))
+                .inner_margin(Margin::symmetric(14, 12)),
         );
     let response = panel.show(ui, |ui| {
+        theme::apply_local(ui, &palette);
         panel_background(app, ui);
         let window_controls = super::window_controls_reservation(
             ui.ctx(),
@@ -821,7 +807,7 @@ pub fn side_panel(app: &mut App, ui: &mut egui::Ui) {
 
 /// The cover and song above the words, as Spotify's right panel shows them.
 fn now_playing_header(app: &mut App, ui: &mut egui::Ui) {
-    let palette = app.palette;
+    let palette = theme::Palette::dark();
     let Some(now) = app.now_playing() else {
         return;
     };
@@ -837,13 +823,13 @@ fn now_playing_header(app: &mut App, ui: &mut egui::Ui) {
             rect,
             theme::RADIUS as f32,
         );
-        ui.add_space(2.0);
+        ui.add_space(6.0);
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
             ui.add(
                 egui::Label::new(
                     egui::RichText::new(&now.title)
-                        .font(theme::semibold(16.0))
+                        .font(theme::semibold(15.0))
                         .color(palette.text),
                 )
                 .truncate(),
@@ -861,7 +847,7 @@ fn now_playing_header(app: &mut App, ui: &mut egui::Ui) {
 }
 
 fn contents(app: &mut App, ui: &mut egui::Ui) {
-    let palette = app.palette;
+    let palette = theme::Palette::dark();
     let Some(now) = app.now_playing() else {
         widgets::empty_state(
             ui,
@@ -947,25 +933,11 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
     // Spicy Lyrics keeps every line at one bold weight and lets colour do
     // the work: white on the line being sung, a dim grey around it. Word
     // fill starts at the active line's quiet white and glows as it sounds.
-    let active_color = if palette.dark {
-        Color32::WHITE
-    } else {
-        palette.text
-    };
-    let glow = if palette.dark {
-        Color32::from_white_alpha(34)
-    } else {
-        Color32::from_black_alpha(24)
-    };
-    let quiet = palette
-        .text
-        .gamma_multiply(if palette.dark { 0.34 } else { 0.30 });
-    let sung = palette
-        .text
-        .gamma_multiply(if palette.dark { 0.50 } else { 0.44 });
-    let active_base = palette
-        .text
-        .gamma_multiply(if palette.dark { 0.40 } else { 0.42 });
+    let active_color = Color32::WHITE;
+    let glow = Color32::from_white_alpha(22);
+    let quiet = palette.text.gamma_multiply(0.35);
+    let sung = palette.text.gamma_multiply(0.48);
+    let active_base = palette.text.gamma_multiply(0.40);
     ui.spacing_mut().scroll.fade.strength = 0.72;
     ui.spacing_mut().scroll.fade.size = 44.0;
     let scroll = crate::autoscroll::show(
@@ -1833,11 +1805,10 @@ mod tests {
     fn a_word_springs_up_and_settles() {
         let size = 20.0;
         let (start, low) = word_bounce(1_000, 1_000, size);
-        assert!(start < 1.0, "a word starts a touch small, got {start}");
-        assert!(low > 0.0, "a word starts a touch low, got {low}");
-        let (peak, lift) = word_bounce(1_385, 1_000, size);
-        assert!(peak > 1.0, "a word overshoots, got {peak}");
-        assert!(lift < 0.0, "the overshoot lifts, got {lift}");
+        assert_eq!((start, low), (1.0, 0.0), "a word starts at rest");
+        let (peak, lift) = word_bounce(1_150, 1_000, size);
+        assert!(peak > 1.0, "a word swells while sounding, got {peak}");
+        assert!(lift < 0.0, "the swell lifts, got {lift}");
         assert_eq!(word_bounce(5_000, 1_000, size), (1.0, 0.0));
     }
 
