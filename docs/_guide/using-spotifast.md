@@ -827,15 +827,17 @@ choose **Follow** to resume it, or choose a line to jump to that part of the son
 Word-synced lyrics follow each word and fill it in as it is sung, as Spotify's
 own panel does. Spotifast asks for them only when you have a free
 [Spicy Lyrics API key](https://developers.spicylyrics.org), which community
-syncers share under the API's attribution terms. Set the key in Spotifast's
-environment before starting it:
+syncers share under the API's attribution terms. Enter your key in Settings
+under **Lyrics > Spicy Lyrics API key**, or set it in Spotifast's environment
+before starting:
 
 ```
 SPICY_LYRICS_KEY=your-key spotifast
 ```
 
 The API's own docs call the variable `SPICY_LYRICS_SECRET_KEY`; either name
-works. The key stays on this computer: keep it out of source control,
+works. In Settings the key stays masked and is stored locally; it is omitted
+from logs and serialized settings when empty. Keep it out of source control,
 screenshots and any build you share. A build distributed to other people
 needs its own arrangement with Spicy Lyrics, such as an app template, rather
 than one shared key. Without a key, or when Spicy Lyrics has no sync for the
@@ -846,14 +848,26 @@ uploaded and made the sync, along with the song's writers; those credits are a
 condition of using the API.
 
 The expand button in the lyrics panel or at the right of the player bar, or
-**F** when no text field has focus, opens lyrics in full screen. A narrow
-window has no room for the player bar's button. Press **F** or **Esc**, or
+**F** when no text field has focus, opens lyrics in full screen. By default it
+fills the app window; turn off **In-window full screen** in the lyrics settings
+to use the system's own full screen space. A narrow window has no room for the
+player bar's button. Press **F** or **Esc**, or
 choose the shrink button, to return to your previous window size. Full-screen lyrics
 scroll smoothly and highlight the playing line automatically. Scrolling by
 hand pauses following; choose **Follow** to resume. Since 0.11.0, a wide
 window shows the song's cover beside the lyrics, the two centred together,
 and a song without words, such as an instrumental, shows just its cover in
 the middle of the screen.
+
+The gear beside the words, in the side panel or full screen, opens quick lyrics
+settings; **All settings...** there opens the complete Lyrics section. The
+**Spicy**, **Apple Music** and **Minimal** presets set a whole look, and every
+part stays adjustable afterwards: alignment, where the sung line sits, line
+spacing, dimming and focus, bounce and glow strength, the softness of the
+karaoke edge, line fades, rise and scale, smooth scrolling with an early lead,
+hiding sung lines, simple and minimal modes, joined words, duet padding,
+translations, credits, backdrop dimming, cover colours, and a low performance
+mode. Timing offset and line hold tune the moment a line switches.
 
 Press **V** in full screen lyrics, or click anywhere that isn't a line of
 lyrics or a control, to put MilkDrop behind the words instead of the cover's

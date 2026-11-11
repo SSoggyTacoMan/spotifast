@@ -983,6 +983,7 @@ pub struct LyricsRequest {
     /// The local file a `spotify:local:` track plays from, whose own
     /// lyrics come before LRCLIB's.
     pub local_file: Option<std::path::PathBuf>,
+    pub spicy_lyrics_key: Option<String>,
 }
 
 pub enum Event {
@@ -4785,10 +4786,15 @@ impl Worker {
                 None => None,
             };
             let word_synced = match (request.track_id.as_deref(), http.as_ref()) {
-                (Some(id), Ok(client)) => crate::lyrics::fetch_spicy(client, &cache_dir, id)
-                    .await
-                    .ok()
-                    .flatten(),
+                (Some(id), Ok(client)) => crate::lyrics::fetch_spicy(
+                    client,
+                    &cache_dir,
+                    id,
+                    request.spicy_lyrics_key.as_deref(),
+                )
+                .await
+                .ok()
+                .flatten(),
                 _ => None,
             };
             let exact = match own.or(word_synced) {

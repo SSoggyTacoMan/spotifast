@@ -75,8 +75,14 @@ pub async fn fetch_spicy(
     http: &reqwest::Client,
     cache_dir: &Path,
     track_id: &str,
+    custom_key: Option<&str>,
 ) -> Result<Option<Lyrics>> {
-    let Some(key) = api_key() else {
+    let key = custom_key
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .map(ToString::to_string)
+        .or_else(api_key);
+    let Some(key) = key else {
         return Ok(None);
     };
     fetch_from(http, API, &key, cache_dir, track_id).await
@@ -494,13 +500,17 @@ impl RawSyllableLine {
         .or(lead_transliterated);
         let at = if lead_start > 0.0 {
             seconds_to_ms(lead_start)
+        } else if let Some(first) = syllables.first() {
+            first.at_ms
         } else {
-            syllables.first().map_or(0, |syllable| syllable.at_ms)
+            background.first().map_or(0, |syllable| syllable.at_ms)
         };
         let end = if lead_end > 0.0 {
             seconds_to_ms(lead_end)
+        } else if let Some(max) = syllables.iter().map(|s| s.end_ms).max() {
+            max
         } else {
-            syllables
+            background
                 .iter()
                 .map(|syllable| syllable.end_ms)
                 .max()

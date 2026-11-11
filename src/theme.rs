@@ -284,6 +284,15 @@ pub fn bold(size: f32) -> egui::FontId {
     fastframe_fonts::Weight::Bold.font_id(size)
 }
 
+/// The lyrics' face, matching Spotifast's native Inter Medium typography.
+pub fn lyrics_quiet(size: f32) -> egui::FontId {
+    medium(size)
+}
+
+pub fn lyrics_sung(size: f32) -> egui::FontId {
+    medium(size)
+}
+
 /// How the desktop renders text, read once per process.
 ///
 /// Tests use the platform's default instead of asking the desktop, so they

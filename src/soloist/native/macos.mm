@@ -10,6 +10,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <memory>
 #include <thread>
 namespace {
 void check(OSStatus status) { if (status != noErr) throw status; }
@@ -22,7 +23,7 @@ template<class T> T get(AudioObjectID object, AudioObjectPropertySelector select
     return value;
 }
 struct Ring {
-    static constexpr size_t capacity = 16384;
+    static constexpr size_t capacity = 65536;
     std::array<float, capacity> samples{};
     std::atomic<uint64_t> read{0}, write{0};
     // Only the consumer can discard. Never overwrite samples it is reading.
@@ -167,15 +168,15 @@ struct API_AVAILABLE(macos(14.2)) Route {
 };
 int run(uint32_t pid, void *context, Control control, Process process, Event event) API_AVAILABLE(macos(14.2));
 int run(uint32_t pid, void *context, Control control, Process process, Event event) {
-    Route route(context, control);
+    auto route = std::make_unique<Route>(context, control);
     try {
-        while (!(control(context) & 1) && !route.open(static_cast<pid_t>(pid)))
+        while (!(control(context) & 1) && !route->open(static_cast<pid_t>(pid)))
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        if (!(control(context) & 1)) route.run(process, event);
+        if (!(control(context) & 1)) route->run(process, event);
         return 0;
     } catch (OSStatus error) {
-        route.audible.store(false);
-        if (route.muted) {
+        route->audible.store(false);
+        if (route->muted) {
             // Keep the dry source muted until the backend stops its child.
             event(context, 3);
             while (!(control(context) & 1)) std::this_thread::sleep_for(std::chrono::milliseconds(20));

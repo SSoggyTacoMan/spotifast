@@ -16,12 +16,12 @@ use librespot_playback::decoder::AudioPacket;
 use librespot_playback::mixer::VolumeGetter;
 use librespot_playback::{NUM_CHANNELS, SAMPLE_RATE};
 
-/// Half a second of audio.
-const KEPT: usize = SAMPLE_RATE as usize / 2;
+/// One second of audio.
+const KEPT: usize = SAMPLE_RATE as usize;
 /// How far behind the newest sample the visualiser looks, so that it shows
 /// what the speaker is playing rather than what the sink has queued: the
-/// sink keeps 180 to 200 ms queued, and the device holds a little more.
-pub const LAG: usize = SAMPLE_RATE as usize / 5;
+/// sink keeps 380 to 400 ms queued, and the device holds a little more.
+pub const LAG: usize = SAMPLE_RATE as usize * 2 / 5;
 /// Samples that go into one spectrum.
 pub const FFT_SAMPLES: usize = 512;
 const SPECTRUM_BINS: usize = FFT_SAMPLES / 2;
@@ -833,7 +833,7 @@ mod tests {
     }
 
     #[test]
-    fn the_tap_keeps_half_a_second_at_most() {
+    fn the_tap_keeps_one_second_at_most() {
         let tap = AudioTap::new();
         let interleaved = vec![0.25f64; 2 * (KEPT + 100)];
         tap.push(&interleaved, 1.0);

@@ -6,7 +6,7 @@ use crate::api::models::pick_image;
 use crate::app::App;
 use crate::i18n::{gettext, ngettext, pgettext};
 use crate::model::{Action, Dialog};
-use crate::settings::{LanguageChoice, ProxyMode, ThemeChoice};
+use crate::settings::{LanguageChoice, LyricsAlign, LyricsStyle, ProxyMode, ThemeChoice};
 use crate::theme::{self, Icon, Palette};
 use crate::winamp::SkinKind;
 
@@ -151,6 +151,83 @@ pub(super) fn filtered_row(
     if row.matches(needle, section) {
         widgets::setting_row(ui, palette, &row.title, &row.description, control);
     }
+}
+
+/// A filtered switch row bound to one lyrics field.
+fn lyrics_switch_row(
+    app: &mut App,
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    needle: &str,
+    section: &str,
+    row: &RowText<'_>,
+    field: fn(&mut crate::settings::Settings) -> &mut bool,
+) {
+    filtered_row(ui, palette, needle, section, row, |ui| {
+        if widgets::switch(ui, palette, row.title.as_ref(), field(&mut app.settings)).changed() {
+            app.mark_settings_dirty();
+        }
+    });
+}
+
+/// A filtered 0..=255 slider row bound to one lyrics field. Its section and
+/// percent suffix are always the Lyrics page's, so they are not repeated at
+/// each of the many call sites.
+fn lyrics_u8_row(
+    app: &mut App,
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    needle: &str,
+    row: &RowText<'_>,
+    field: fn(&mut crate::settings::Settings) -> &mut u8,
+    range: std::ops::RangeInclusive<u8>,
+) {
+    let section = gettext(app.locale, "Lyrics");
+    filtered_row(ui, palette, needle, &section, row, |ui| {
+        let mut value = *field(&mut app.settings);
+        let changed = setting_slider(
+            ui,
+            palette,
+            &mut value,
+            range,
+            |slider| slider.step_by(1.0),
+            |value| value.suffix("%"),
+        )
+        .changed();
+        if changed {
+            *field(&mut app.settings) = value;
+            app.mark_settings_dirty();
+        }
+    });
+}
+
+/// A filtered millisecond slider row bound to one lyrics field.
+fn lyrics_ms_row(
+    app: &mut App,
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    needle: &str,
+    row: &RowText<'_>,
+    field: fn(&mut crate::settings::Settings) -> &mut u32,
+    range: std::ops::RangeInclusive<u32>,
+) {
+    let section = gettext(app.locale, "Lyrics");
+    filtered_row(ui, palette, needle, &section, row, |ui| {
+        let mut value = *field(&mut app.settings);
+        let changed = setting_slider(
+            ui,
+            palette,
+            &mut value,
+            range,
+            |slider| slider.step_by(25.0),
+            |value| value.suffix(" ms"),
+        )
+        .changed();
+        if changed {
+            *field(&mut app.settings) = value;
+            app.mark_settings_dirty();
+        }
+    });
 }
 
 /// `filtered_row` for a row with no control.
@@ -1693,6 +1770,622 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     },
                 );
             }
+        });
+    }
+
+    let lyrics_title = gettext(locale, "Lyrics");
+    let lyrics_rows = [
+        RowText::new(
+            gettext(locale, "Text size"),
+            gettext(locale, "Relative size of lyrics text."),
+        ),
+        RowText::new(
+            gettext(locale, "Style preset"),
+            gettext(
+                locale,
+                "Start from Spicy, Apple Music or Minimal. Every part can still be adjusted below.",
+            ),
+        ),
+        RowText::new(
+            gettext(locale, "Text alignment"),
+            gettext(locale, "Where lines sit across the lyrics column."),
+        ),
+        RowText::new(
+            gettext(locale, "Active line position"),
+            gettext(
+                locale,
+                "Where the line being sung sits in full screen, from the top.",
+            ),
+        ),
+        RowText::new(
+            gettext(locale, "Line spacing"),
+            gettext(locale, "Gap between lines as a percentage of the default."),
+        ),
+        RowText::new(
+            gettext(locale, "Inactive line brightness"),
+            gettext(locale, "How bright lines that are not being sung stay."),
+        ),
+        RowText::new(
+            gettext(locale, "Focus mode"),
+            gettext(
+                locale,
+                "Fade lines further from the song to draw focus to current lyrics.",
+            ),
+        ),
+        RowText::new(
+            gettext(locale, "Word bounce"),
+            gettext(locale, "Swell and bounce syllables as they start sounding."),
+        ),
+        RowText::new(
+            gettext(locale, "Bounce strength"),
+            gettext(locale, "How far words swell and lift while sounding."),
+        ),
+        RowText::new(
+            gettext(locale, "Word glow"),
+            gettext(locale, "Soft luminous aura around the active word."),
+        ),
+        RowText::new(
+            gettext(locale, "Glow strength"),
+            gettext(locale, "How bright the aura around the sung word is."),
+        ),
+        RowText::new(
+            gettext(locale, "Word fade"),
+            gettext(
+                locale,
+                "Soften the leading edge of the karaoke fill, as Apple Music does.",
+            ),
+        ),
+        RowText::new(
+            gettext(locale, "Line fade duration"),
+            gettext(
+                locale,
+                "How long a line takes to light up or dim as the song moves on.",
+            ),
+        ),
+        RowText::new(
+            gettext(locale, "Early scroll"),
+            gettext(locale, "Move to the next line before it starts sounding."),
+        ),
+        RowText::new(
+            gettext(locale, "Smooth scrolling"),
+            gettext(locale, "Glide between lines instead of jumping."),
+        ),
+        RowText::new(
+            gettext(locale, "Scroll duration"),
+            gettext(locale, "How long a glide between lines takes."),
+        ),
+        RowText::new(
+            gettext(locale, "Rise into place"),
+            gettext(locale, "Lift the line being sung up into place."),
+        ),
+        RowText::new(
+            gettext(locale, "Active line scale"),
+            gettext(locale, "Grow the line being sung."),
+        ),
+        RowText::new(
+            gettext(locale, "Hide passed lines"),
+            gettext(
+                locale,
+                "Hide lines that have already been sung in full screen.",
+            ),
+        ),
+        RowText::new(
+            gettext(locale, "Simple mode"),
+            gettext(
+                locale,
+                "Drop glow, bounce and ambient colour for a plainer look.",
+            ),
+        ),
+        RowText::new(
+            gettext(locale, "Minimal mode"),
+            gettext(locale, "Keep only the line being sung and the ones ahead."),
+        ),
+        RowText::new(
+            gettext(locale, "Join split words"),
+            gettext(
+                locale,
+                "Fill each word evenly from its first syllable to its last.",
+            ),
+        ),
+        RowText::new(
+            gettext(locale, "Duet padding"),
+            gettext(locale, "Step duet lines in from the singer's side."),
+        ),
+        RowText::new(
+            gettext(locale, "Translations"),
+            gettext(
+                locale,
+                "Show translations and romanisations under the words.",
+            ),
+        ),
+        RowText::new(
+            gettext(locale, "Credits"),
+            gettext(locale, "Show the lyrics source and credits at the end."),
+        ),
+        RowText::new(
+            gettext(locale, "Backdrop dimming"),
+            gettext(locale, "How dark the artwork behind the lyrics is."),
+        ),
+        RowText::new(
+            gettext(locale, "Cover colours"),
+            gettext(locale, "Tint sung words with colours from the cover art."),
+        ),
+        RowText::new(
+            gettext(locale, "Low performance"),
+            gettext(
+                locale,
+                "Fewer frames and lighter effects on slower machines.",
+            ),
+        ),
+        RowText::new(
+            gettext(locale, "Line hold duration"),
+            gettext(
+                locale,
+                "Hold the active line before switching to the next line.",
+            ),
+        ),
+        RowText::new(
+            gettext(locale, "Timing offset"),
+            gettext(
+                locale,
+                "Shift lyrics timing earlier or later to match audio.",
+            ),
+        ),
+        RowText::new(
+            gettext(locale, "In-window full screen"),
+            gettext(
+                locale,
+                "Fill the application window instead of entering macOS system full screen.",
+            ),
+        ),
+        RowText::new(
+            gettext(locale, "Focus strength"),
+            gettext(locale, "How quickly lines further from the song fade away."),
+        ),
+        RowText::new(
+            gettext(locale, "Spicy Lyrics API key"),
+            gettext(
+                locale,
+                "Word-synced lyrics token with automatic fallback to Spotify and LRCLIB.",
+            ),
+        ),
+        RowText::new(
+            gettext(locale, "Background vocal pop-out"),
+            gettext(
+                locale,
+                "Show secondary lines while active and tuck them away afterwards.",
+            ),
+        ),
+    ];
+    if section_matches(&needle, &lyrics_title, &lyrics_rows) {
+        any_visible = true;
+        section(ui, &palette, &lyrics_title, |ui| {
+            filtered_row(
+                ui,
+                &palette,
+                &needle,
+                &lyrics_title,
+                &lyrics_rows[0],
+                |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        let mut size = app.settings.lyrics_font_size;
+                        if theme::soft_button(ui, &palette, None, "-", false).clicked() {
+                            size = size.saturating_sub(10).max(70);
+                        }
+                        theme::text(ui, format!("{size}%"), theme::medium(13.5), palette.text);
+                        if theme::soft_button(ui, &palette, None, "+", false).clicked() {
+                            size = (size + 10).min(160);
+                        }
+                        if size != app.settings.lyrics_font_size {
+                            app.settings.lyrics_font_size = size;
+                            app.mark_settings_dirty();
+                        }
+                    });
+                },
+            );
+            filtered_row(
+                ui,
+                &palette,
+                &needle,
+                &lyrics_title,
+                &lyrics_rows[1],
+                |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        for style in LyricsStyle::ALL {
+                            if theme::soft_button(
+                                ui,
+                                &palette,
+                                None,
+                                &style.label(locale),
+                                app.settings.lyrics_style == style,
+                            )
+                            .clicked()
+                            {
+                                app.settings.apply_lyrics_style(style);
+                                app.mark_settings_dirty();
+                            }
+                        }
+                    });
+                },
+            );
+            filtered_row(
+                ui,
+                &palette,
+                &needle,
+                &lyrics_title,
+                &lyrics_rows[2],
+                |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        for align in LyricsAlign::ALL {
+                            if theme::soft_button(
+                                ui,
+                                &palette,
+                                None,
+                                &align.label(locale),
+                                app.settings.lyrics_align == align,
+                            )
+                            .clicked()
+                            {
+                                app.settings.lyrics_align = align;
+                                app.mark_settings_dirty();
+                            }
+                        }
+                    });
+                },
+            );
+            lyrics_u8_row(
+                app,
+                ui,
+                &palette,
+                &needle,
+                &lyrics_rows[3],
+                |settings| &mut settings.lyrics_position,
+                15..=75,
+            );
+            lyrics_u8_row(
+                app,
+                ui,
+                &palette,
+                &needle,
+                &lyrics_rows[4],
+                |settings| &mut settings.lyrics_spacing,
+                50..=200,
+            );
+            lyrics_u8_row(
+                app,
+                ui,
+                &palette,
+                &needle,
+                &lyrics_rows[5],
+                |settings| &mut settings.lyrics_dim,
+                20..=100,
+            );
+            lyrics_switch_row(
+                app,
+                ui,
+                &palette,
+                &needle,
+                &lyrics_title,
+                &lyrics_rows[6],
+                |settings| &mut settings.lyrics_distance_blur,
+            );
+            lyrics_u8_row(
+                app,
+                ui,
+                &palette,
+                &needle,
+                &lyrics_rows[31],
+                |settings| &mut settings.lyrics_focus_strength,
+                0..=100,
+            );
+            lyrics_switch_row(
+                app,
+                ui,
+                &palette,
+                &needle,
+                &lyrics_title,
+                &lyrics_rows[7],
+                |settings| &mut settings.lyrics_bounce,
+            );
+            lyrics_u8_row(
+                app,
+                ui,
+                &palette,
+                &needle,
+                &lyrics_rows[8],
+                |settings| &mut settings.lyrics_bounce_strength,
+                0..=200,
+            );
+            lyrics_switch_row(
+                app,
+                ui,
+                &palette,
+                &needle,
+                &lyrics_title,
+                &lyrics_rows[9],
+                |settings| &mut settings.lyrics_glow,
+            );
+            lyrics_u8_row(
+                app,
+                ui,
+                &palette,
+                &needle,
+                &lyrics_rows[10],
+                |settings| &mut settings.lyrics_glow_strength,
+                0..=200,
+            );
+            lyrics_u8_row(
+                app,
+                ui,
+                &palette,
+                &needle,
+                &lyrics_rows[11],
+                |settings| &mut settings.lyrics_fade_width,
+                0..=100,
+            );
+            lyrics_ms_row(
+                app,
+                ui,
+                &palette,
+                &needle,
+                &lyrics_rows[12],
+                |settings| &mut settings.lyrics_line_fade_ms,
+                0..=1000,
+            );
+            lyrics_ms_row(
+                app,
+                ui,
+                &palette,
+                &needle,
+                &lyrics_rows[13],
+                |settings| &mut settings.lyrics_early_scroll_ms,
+                0..=800,
+            );
+            lyrics_switch_row(
+                app,
+                ui,
+                &palette,
+                &needle,
+                &lyrics_title,
+                &lyrics_rows[14],
+                |settings| &mut settings.lyrics_smooth_scroll,
+            );
+            lyrics_ms_row(
+                app,
+                ui,
+                &palette,
+                &needle,
+                &lyrics_rows[15],
+                |settings| &mut settings.lyrics_scroll_ms,
+                0..=1000,
+            );
+            lyrics_switch_row(
+                app,
+                ui,
+                &palette,
+                &needle,
+                &lyrics_title,
+                &lyrics_rows[16],
+                |settings| &mut settings.lyrics_rise,
+            );
+            lyrics_switch_row(
+                app,
+                ui,
+                &palette,
+                &needle,
+                &lyrics_title,
+                &lyrics_rows[17],
+                |settings| &mut settings.lyrics_scale,
+            );
+            lyrics_switch_row(
+                app,
+                ui,
+                &palette,
+                &needle,
+                &lyrics_title,
+                &lyrics_rows[18],
+                |settings| &mut settings.lyrics_hide_passed_lines,
+            );
+            lyrics_switch_row(
+                app,
+                ui,
+                &palette,
+                &needle,
+                &lyrics_title,
+                &lyrics_rows[19],
+                |settings| &mut settings.lyrics_simple_mode,
+            );
+            lyrics_switch_row(
+                app,
+                ui,
+                &palette,
+                &needle,
+                &lyrics_title,
+                &lyrics_rows[20],
+                |settings| &mut settings.lyrics_minimal_mode,
+            );
+            lyrics_switch_row(
+                app,
+                ui,
+                &palette,
+                &needle,
+                &lyrics_title,
+                &lyrics_rows[21],
+                |settings| &mut settings.lyrics_join_words,
+            );
+            lyrics_switch_row(
+                app,
+                ui,
+                &palette,
+                &needle,
+                &lyrics_title,
+                &lyrics_rows[22],
+                |settings| &mut settings.lyrics_duet_padding,
+            );
+            lyrics_switch_row(
+                app,
+                ui,
+                &palette,
+                &needle,
+                &lyrics_title,
+                &lyrics_rows[33],
+                |settings| &mut settings.lyrics_background_pop,
+            );
+            lyrics_switch_row(
+                app,
+                ui,
+                &palette,
+                &needle,
+                &lyrics_title,
+                &lyrics_rows[23],
+                |settings| &mut settings.lyrics_show_translations,
+            );
+            lyrics_switch_row(
+                app,
+                ui,
+                &palette,
+                &needle,
+                &lyrics_title,
+                &lyrics_rows[24],
+                |settings| &mut settings.lyrics_show_credits,
+            );
+            lyrics_u8_row(
+                app,
+                ui,
+                &palette,
+                &needle,
+                &lyrics_rows[25],
+                |settings| &mut settings.lyrics_background_dim,
+                0..=100,
+            );
+            lyrics_switch_row(
+                app,
+                ui,
+                &palette,
+                &needle,
+                &lyrics_title,
+                &lyrics_rows[26],
+                |settings| &mut settings.lyrics_cover_color,
+            );
+            lyrics_switch_row(
+                app,
+                ui,
+                &palette,
+                &needle,
+                &lyrics_title,
+                &lyrics_rows[27],
+                |settings| &mut settings.lyrics_low_performance,
+            );
+            lyrics_ms_row(
+                app,
+                ui,
+                &palette,
+                &needle,
+                &lyrics_rows[28],
+                |settings| &mut settings.lyrics_line_hold_ms,
+                0..=500,
+            );
+            filtered_row(
+                ui,
+                &palette,
+                &needle,
+                &lyrics_title,
+                &lyrics_rows[29],
+                |ui| {
+                    let mut offset = app.settings.lyrics_offset_ms.clamp(-500, 500);
+                    let changed = setting_slider(
+                        ui,
+                        &palette,
+                        &mut offset,
+                        -500..=500,
+                        |slider| slider.step_by(25.0),
+                        |value| value.suffix(" ms"),
+                    )
+                    .changed();
+                    if changed {
+                        app.settings.lyrics_offset_ms = offset;
+                        app.mark_settings_dirty();
+                    }
+                },
+            );
+            lyrics_switch_row(
+                app,
+                ui,
+                &palette,
+                &needle,
+                &lyrics_title,
+                &lyrics_rows[30],
+                |settings| &mut settings.lyrics_windowed_fullscreen,
+            );
+            filtered_row_sized(
+                ui,
+                &palette,
+                &needle,
+                &lyrics_title,
+                &lyrics_rows[32],
+                300.0,
+                |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        let response = Frame::new()
+                            .fill(palette.surface)
+                            .corner_radius(CornerRadius::same(6))
+                            .inner_margin(Margin::symmetric(10, 6))
+                            .show(ui, |ui| {
+                                widgets::text_edit(
+                                    ui,
+                                    app.locale,
+                                    egui::TextEdit::singleline(&mut app.settings.spicy_lyrics_key)
+                                        .id(egui::Id::new("spicy-lyrics-api-key"))
+                                        .password(true)
+                                        .hint_text(
+                                            egui::RichText::new(gettext(locale, "API key"))
+                                                .color(palette.dim),
+                                        )
+                                        .font(theme::regular(13.0))
+                                        .frame(egui::Frame::NONE)
+                                        .desired_width(140.0),
+                                )
+                            })
+                            .inner;
+                        if response.changed() {
+                            app.mark_settings_dirty();
+                        }
+                        if theme::pill_button(ui, &palette, &gettext(locale, "Developers"), false)
+                            .clicked()
+                        {
+                            app.actions.push(Action::OpenUrl(
+                                "https://developers.spicylyrics.org".into(),
+                            ));
+                        }
+                        let info_btn = theme::soft_button(ui, &palette, None, "?", false);
+                        egui::Popup::menu(&info_btn)
+                            .frame(widgets::menu_frame(&palette).inner_margin(Margin::same(12)))
+                            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                            .show(|ui| {
+                                ui.set_width(260.0);
+                                theme::text(
+                                    ui,
+                                    gettext(locale, "Spicy Lyrics"),
+                                    theme::bold(14.0),
+                                    palette.text,
+                                );
+                                ui.add_space(4.0);
+                                ui.label(
+                                    egui::RichText::new(gettext(
+                                        locale,
+                                        "Provides word-synced lyrics with rich timing. When no key is set or a track is not found, Spotifast automatically falls back to Spotify and LRCLIB.",
+                                    ))
+                                    .font(theme::regular(12.5))
+                                    .color(palette.secondary),
+                                );
+                            });
+                    });
+                },
+            );
         });
     }
 

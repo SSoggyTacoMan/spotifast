@@ -50,17 +50,17 @@ type Opener = fn(Option<&str>, u32, &AudioControl) -> Result<Output, OpenError>;
 /// chunks: librespot's packets hold as little as 4 ms, so a dozen of them
 /// could be less than one PipeWire quantum (2048 frames, 43 ms), and every
 /// callback would drain the queue.
-const QUEUE_AHEAD: Duration = Duration::from_millis(200);
+const QUEUE_AHEAD: Duration = Duration::from_millis(400);
 
 /// How much of a full queue rodio plays before `write` is woken to top it
 /// up. librespot's packets hold 4 to 13 ms of sound, so polling every 10 ms
 /// (or waking for every packet) kept the decoder thread awake about 100
 /// times a second; this wakes it about 30 times.
-const REFILL: Duration = Duration::from_millis(20);
+const REFILL: Duration = Duration::from_millis(40);
 
 /// Longest `write` waits for rodio before it looks at the device again: a
 /// stream that has failed or stopped playing finishes no chunk to wake it.
-const QUEUE_WAIT: Duration = Duration::from_millis(50);
+const QUEUE_WAIT: Duration = Duration::from_millis(100);
 
 /// Maximum time `stop` waits for the queue to drain.
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
@@ -1748,10 +1748,13 @@ mod tests {
     fn the_queue_holds_time_not_a_count_of_packets() {
         let short_packet = 176; // 4 ms at 44.1 kHz
         assert!(!queue_is_full(12 * short_packet, 44_100));
-        assert!(!queue_is_full(8_820, 44_100), "200 ms is the most it holds");
-        assert!(queue_is_full(8_821, 44_100));
-        assert!(!queue_is_full(9_600, 48_000));
-        assert!(queue_is_full(9_601, 48_000));
+        assert!(
+            !queue_is_full(17_640, 44_100),
+            "400 ms is the most it holds"
+        );
+        assert!(queue_is_full(17_641, 44_100));
+        assert!(!queue_is_full(19_200, 48_000));
+        assert!(queue_is_full(19_201, 48_000));
     }
 
     #[test]

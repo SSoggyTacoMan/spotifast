@@ -8731,7 +8731,7 @@ mod tests {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
-                egui::vec2(1280.0, 4000.0),
+                egui::vec2(1280.0, 6000.0),
             )),
             ..Default::default()
         };
@@ -8819,7 +8819,7 @@ mod tests {
                 // Draw the full Settings page, including MilkDrop.
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
-                    egui::vec2(1280.0, 4000.0),
+                    egui::vec2(1280.0, 6000.0),
                 )),
                 ..Default::default()
             };
@@ -8900,7 +8900,7 @@ mod tests {
             let input = egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
-                    egui::vec2(1280.0, 4000.0),
+                    egui::vec2(1280.0, 6000.0),
                 )),
                 ..Default::default()
             };
@@ -9041,6 +9041,44 @@ mod tests {
                 assert_same_row(&placed, "Now playing", "Follow");
             }
         }
+        app.backend.shutdown();
+    }
+
+    /// The Lyrics section offers the three looks and the alignment choice,
+    /// and picking one writes the whole preset rather than only its name.
+    #[test]
+    fn lyrics_look_presets_are_on_the_settings_page() {
+        use egui::accesskit::{Action as AccessibleAction, Role};
+        let (ctx, mut app) = accessible_app("lyrics-look-presets");
+        app.open(Page::Settings);
+        let tree = accessible_frame_height(&ctx, &mut app, vec![], 6000.0);
+        let minimal = accessible_node(&tree, "Minimal", Role::Button);
+        let _ = accessible_frame_height(
+            &ctx,
+            &mut app,
+            vec![accessible_action(minimal, AccessibleAction::Click, None)],
+            6000.0,
+        );
+        assert_eq!(
+            app.settings.lyrics_style,
+            crate::settings::LyricsStyle::Minimal
+        );
+        assert!(app.settings.lyrics_minimal_mode);
+        assert!(app.settings.lyrics_simple_mode);
+        assert!(app.settings.lyrics_hide_passed_lines);
+
+        let tree = accessible_frame_height(&ctx, &mut app, vec![], 6000.0);
+        let center = accessible_node(&tree, "Center", Role::Button);
+        let _ = accessible_frame_height(
+            &ctx,
+            &mut app,
+            vec![accessible_action(center, AccessibleAction::Click, None)],
+            6000.0,
+        );
+        assert_eq!(
+            app.settings.lyrics_align,
+            crate::settings::LyricsAlign::Center
+        );
         app.backend.shutdown();
     }
 
@@ -9239,7 +9277,8 @@ mod tests {
         remote.state.is_playing = false;
         remote.state.progress_ms = Some(106_000);
         let mut texts = Vec::new();
-        for frame in 0..10 {
+        // Long enough for the smooth scroll to the sung line to settle.
+        for frame in 0..30 {
             let mut output = ctx.run_ui(
                 egui::RawInput {
                     time: Some(f64::from(frame) / 30.0),

@@ -191,6 +191,64 @@ pub enum ProxyMode {
     Socks,
 }
 
+/// The look lyrics start from. Choosing one writes the appearance fields on
+/// [`Settings`]; every one of them stays adjustable afterwards, so this is a
+/// preset rather than a mode that fights the controls below it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LyricsStyle {
+    #[default]
+    Spicy,
+    AppleMusic,
+    Minimal,
+}
+
+impl LyricsStyle {
+    pub const ALL: [Self; 3] = [Self::Spicy, Self::AppleMusic, Self::Minimal];
+
+    pub fn label(self, locale: crate::i18n::Locale) -> std::borrow::Cow<'static, str> {
+        use crate::i18n::pgettext;
+        match self {
+            Self::Spicy => pgettext(locale, "lyrics style", "Spicy"),
+            Self::AppleMusic => pgettext(locale, "lyrics style", "Apple Music"),
+            Self::Minimal => pgettext(locale, "lyrics style", "Minimal"),
+        }
+    }
+
+    /// How much bigger the line being sung grows, before the scale toggle.
+    pub fn active_growth(self) -> f32 {
+        match self {
+            Self::Spicy => 1.10,
+            Self::AppleMusic => 1.045,
+            Self::Minimal => 1.0,
+        }
+    }
+}
+
+/// Where lines sit across the lyrics column. Left is the reading start, so
+/// right-to-left lyrics anchor at the right edge in that position.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LyricsAlign {
+    #[default]
+    Left,
+    Center,
+    Right,
+}
+
+impl LyricsAlign {
+    pub const ALL: [Self; 3] = [Self::Left, Self::Center, Self::Right];
+
+    pub fn label(self, locale: crate::i18n::Locale) -> std::borrow::Cow<'static, str> {
+        use crate::i18n::pgettext;
+        match self {
+            Self::Left => pgettext(locale, "lyrics alignment", "Left"),
+            Self::Center => pgettext(locale, "lyrics alignment", "Center"),
+            Self::Right => pgettext(locale, "lyrics alignment", "Right"),
+        }
+    }
+}
+
 impl ProxyMode {
     pub const ALL: [ProxyMode; 4] = [Self::Off, Self::System, Self::Http, Self::Socks];
 
@@ -444,9 +502,111 @@ pub struct Settings {
     pub milkdrop_fullscreen: bool,
     /// The MilkDrop panel's height in the mini player, in skin pixels.
     pub milkdrop_panel_height: u32,
+    /// Lyrics text size as a percentage of the default (85..=160).
+    #[serde(default = "default_lyrics_font_size")]
+    pub lyrics_font_size: u32,
+    /// Show a soft glow around sung words.
+    #[serde(default = "default_true")]
+    pub lyrics_glow: bool,
+    /// Swell and lift words as they start sounding.
+    #[serde(default = "default_true")]
+    pub lyrics_bounce: bool,
+    /// Blur lines far from the active one to draw the eye.
+    #[serde(default = "default_true")]
+    pub lyrics_distance_blur: bool,
+    /// Milliseconds to hold the active line before switching (0..=500).
+    #[serde(default)]
+    pub lyrics_line_hold_ms: u32,
+    /// Timing offset in milliseconds, negative is early (-500..=500).
+    #[serde(default)]
+    pub lyrics_offset_ms: i32,
+    /// Expand fills the window instead of entering macOS native fullscreen.
+    #[serde(default = "default_true")]
+    pub lyrics_windowed_fullscreen: bool,
     /// MilkDrop rather than the cover's art behind full screen lyrics.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub lyrics_milkdrop: bool,
+    /// The look to start from: Spicy, Apple Music or Minimal.
+    #[serde(default)]
+    pub lyrics_style: LyricsStyle,
+    /// Where lines sit across the column.
+    #[serde(default)]
+    pub lyrics_align: LyricsAlign,
+    /// Where the line being sung sits, as a percentage from the top (15..=75).
+    #[serde(default = "default_lyrics_position")]
+    pub lyrics_position: u8,
+    /// Gap between lines as a percentage of the default (50..=200).
+    #[serde(default = "default_lyrics_percent")]
+    pub lyrics_spacing: u8,
+    /// Brightness of lines that are not being sung (20..=100).
+    #[serde(default = "default_lyrics_percent")]
+    pub lyrics_dim: u8,
+    /// How quickly distant lines fade with distance (0..=100).
+    #[serde(default = "default_lyrics_percent")]
+    pub lyrics_focus_strength: u8,
+    /// How far words swell as they start sounding (0..=200).
+    #[serde(default = "default_lyrics_percent")]
+    pub lyrics_bounce_strength: u8,
+    /// How bright the glow around the active word is (0..=200).
+    #[serde(default = "default_lyrics_percent")]
+    pub lyrics_glow_strength: u8,
+    /// How soft the leading edge of the karaoke fill is (0..=100).
+    #[serde(default = "default_lyrics_fade_width")]
+    pub lyrics_fade_width: u8,
+    /// How long a line takes to light up or fade, in milliseconds.
+    #[serde(default = "default_lyrics_line_fade_ms")]
+    pub lyrics_line_fade_ms: u32,
+    /// Start following a line this many milliseconds early (0..=800).
+    #[serde(default)]
+    pub lyrics_early_scroll_ms: u32,
+    /// How long a scroll between lines takes, in milliseconds.
+    #[serde(default = "default_lyrics_scroll_ms")]
+    pub lyrics_scroll_ms: u32,
+    /// Move the view smoothly between lines.
+    #[serde(default = "default_true")]
+    pub lyrics_smooth_scroll: bool,
+    /// Lift the line being sung into place.
+    #[serde(default = "default_true")]
+    pub lyrics_rise: bool,
+    /// Grow the line being sung.
+    #[serde(default = "default_true")]
+    pub lyrics_scale: bool,
+    /// Hide lines that have already been sung in full screen.
+    #[serde(default)]
+    pub lyrics_hide_passed_lines: bool,
+    /// Drop the extra effects for a plainer look.
+    #[serde(default)]
+    pub lyrics_simple_mode: bool,
+    /// Keep only what is being sung and what comes next.
+    #[serde(default)]
+    pub lyrics_minimal_mode: bool,
+    /// Fewer frames and finer effects, for slower machines.
+    #[serde(default)]
+    pub lyrics_low_performance: bool,
+    /// Fill each word evenly from its first syllable to its last.
+    #[serde(default)]
+    pub lyrics_join_words: bool,
+    /// Indent duet lines toward the singer's side.
+    #[serde(default = "default_true")]
+    pub lyrics_duet_padding: bool,
+    /// Show translations and romanisations under the words.
+    #[serde(default = "default_true")]
+    pub lyrics_show_translations: bool,
+    /// Show the lyrics source and credits at the end.
+    #[serde(default = "default_true")]
+    pub lyrics_show_credits: bool,
+    /// How dark the artwork behind the lyrics is (0..=100).
+    #[serde(default = "default_lyrics_percent")]
+    pub lyrics_background_dim: u8,
+    /// Tint sung words with colours from the cover.
+    #[serde(default)]
+    pub lyrics_cover_color: bool,
+    /// Pop background vocals out while active and collapse them afterwards.
+    #[serde(default = "default_true")]
+    pub lyrics_background_pop: bool,
+    /// Developer key for the Spicy Lyrics API.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub spicy_lyrics_key: String,
     /// The MilkDrop window's size in logical points, when not full-screen.
     pub milkdrop_size: [f32; 2],
     /// Which proxy to use. Older files without this field stay on `system`.
@@ -479,10 +639,11 @@ pub struct Settings {
 impl std::fmt::Debug for Settings {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Serialization already omits the password and old combined URL.
-        // Keep the proxy username out of diagnostics as well.
+        // Keep the proxy username and Spicy Lyrics key out of diagnostics as well.
         let mut preferences = serde_json::to_value(self).map_err(|_| std::fmt::Error)?;
         if let Some(fields) = preferences.as_object_mut() {
             fields.remove("proxy_username");
+            fields.remove("spicy_lyrics_key");
         }
         f.debug_struct("Settings")
             .field("preferences", &preferences)
@@ -576,7 +737,41 @@ impl Default for Settings {
             milkdrop_scale: 1,
             milkdrop_fullscreen: false,
             milkdrop_panel_height: 232,
+            lyrics_font_size: default_lyrics_font_size(),
+            lyrics_glow: true,
+            lyrics_bounce: true,
+            lyrics_distance_blur: true,
+            lyrics_line_hold_ms: 0,
+            lyrics_offset_ms: 0,
+            lyrics_windowed_fullscreen: true,
             lyrics_milkdrop: false,
+            lyrics_style: LyricsStyle::Spicy,
+            lyrics_align: LyricsAlign::Left,
+            lyrics_position: default_lyrics_position(),
+            lyrics_spacing: default_lyrics_percent(),
+            lyrics_dim: default_lyrics_percent(),
+            lyrics_focus_strength: default_lyrics_percent(),
+            lyrics_bounce_strength: default_lyrics_percent(),
+            lyrics_glow_strength: default_lyrics_percent(),
+            lyrics_fade_width: default_lyrics_fade_width(),
+            lyrics_line_fade_ms: default_lyrics_line_fade_ms(),
+            lyrics_early_scroll_ms: 0,
+            lyrics_scroll_ms: default_lyrics_scroll_ms(),
+            lyrics_smooth_scroll: true,
+            lyrics_rise: true,
+            lyrics_scale: true,
+            lyrics_hide_passed_lines: false,
+            lyrics_simple_mode: false,
+            lyrics_minimal_mode: false,
+            lyrics_low_performance: false,
+            lyrics_join_words: false,
+            lyrics_duet_padding: true,
+            lyrics_show_translations: true,
+            lyrics_show_credits: true,
+            lyrics_background_dim: default_lyrics_percent(),
+            lyrics_cover_color: false,
+            lyrics_background_pop: true,
+            spicy_lyrics_key: String::new(),
             milkdrop_size: crate::milkdrop::DEFAULT_SIZE,
             proxy_mode: ProxyMode::System,
             proxy: String::new(),
@@ -598,7 +793,124 @@ fn default_buffer_ms() -> u32 {
     crate::sink::DEFAULT_BUFFER_MS
 }
 
+fn default_lyrics_font_size() -> u32 {
+    100
+}
+
+fn default_lyrics_position() -> u8 {
+    38
+}
+
+fn default_lyrics_percent() -> u8 {
+    100
+}
+
+fn default_lyrics_fade_width() -> u8 {
+    30
+}
+
+fn default_lyrics_line_fade_ms() -> u32 {
+    300
+}
+
+fn default_lyrics_scroll_ms() -> u32 {
+    450
+}
+
+fn default_true() -> bool {
+    true
+}
+
 impl Settings {
+    /// Starts the lyrics from one of the three looks, leaving timing,
+    /// fullscreen and performance choices alone. Every appearance field
+    /// stays adjustable afterwards.
+    pub fn apply_lyrics_style(&mut self, style: LyricsStyle) {
+        self.lyrics_style = style;
+        self.lyrics_align = LyricsAlign::Left;
+        self.lyrics_duet_padding = true;
+        self.lyrics_show_translations = true;
+        self.lyrics_show_credits = true;
+        self.lyrics_background_dim = default_lyrics_percent();
+        self.lyrics_cover_color = false;
+        match style {
+            LyricsStyle::Spicy => {
+                self.lyrics_position = 38;
+                self.lyrics_spacing = 100;
+                self.lyrics_dim = 100;
+                self.lyrics_focus_strength = 100;
+                self.lyrics_bounce = true;
+                self.lyrics_bounce_strength = 100;
+                self.lyrics_glow = true;
+                self.lyrics_glow_strength = 100;
+                self.lyrics_distance_blur = true;
+                self.lyrics_fade_width = 30;
+                self.lyrics_line_fade_ms = 300;
+                self.lyrics_early_scroll_ms = 0;
+                self.lyrics_scroll_ms = 450;
+                self.lyrics_smooth_scroll = true;
+                self.lyrics_rise = true;
+                self.lyrics_scale = true;
+                self.lyrics_hide_passed_lines = false;
+                self.lyrics_simple_mode = false;
+                self.lyrics_minimal_mode = false;
+                self.lyrics_join_words = false;
+                self.lyrics_background_pop = true;
+            }
+            LyricsStyle::AppleMusic => {
+                self.lyrics_position = 42;
+                self.lyrics_spacing = 115;
+                self.lyrics_dim = 70;
+                self.lyrics_focus_strength = 70;
+                // Apple Music lets the karaoke mask carry the motion: a
+                // wide soft edge, a longer light-up and a gentle rise.
+                self.lyrics_bounce = false;
+                self.lyrics_bounce_strength = 100;
+                self.lyrics_glow = true;
+                self.lyrics_glow_strength = 55;
+                self.lyrics_distance_blur = true;
+                self.lyrics_fade_width = 70;
+                self.lyrics_line_fade_ms = 500;
+                self.lyrics_early_scroll_ms = 0;
+                self.lyrics_scroll_ms = 550;
+                self.lyrics_smooth_scroll = true;
+                self.lyrics_rise = true;
+                self.lyrics_scale = true;
+                self.lyrics_hide_passed_lines = false;
+                self.lyrics_simple_mode = false;
+                self.lyrics_minimal_mode = false;
+                self.lyrics_join_words = false;
+                self.lyrics_background_pop = true;
+            }
+            LyricsStyle::Minimal => {
+                self.lyrics_position = 30;
+                self.lyrics_spacing = 100;
+                self.lyrics_dim = 45;
+                self.lyrics_focus_strength = 100;
+                self.lyrics_bounce = false;
+                self.lyrics_bounce_strength = 0;
+                self.lyrics_glow = false;
+                self.lyrics_glow_strength = 0;
+                self.lyrics_distance_blur = true;
+                self.lyrics_fade_width = 0;
+                self.lyrics_line_fade_ms = 150;
+                self.lyrics_early_scroll_ms = 0;
+                self.lyrics_scroll_ms = 300;
+                self.lyrics_smooth_scroll = true;
+                self.lyrics_rise = false;
+                self.lyrics_scale = false;
+                self.lyrics_hide_passed_lines = true;
+                self.lyrics_simple_mode = true;
+                self.lyrics_minimal_mode = true;
+                self.lyrics_join_words = true;
+                self.lyrics_duet_padding = false;
+                self.lyrics_show_translations = false;
+                self.lyrics_show_credits = false;
+                self.lyrics_background_pop = false;
+            }
+        }
+    }
+
     /// The local files folder, when one is set.
     pub fn local_files_folder(&self) -> Option<std::path::PathBuf> {
         self.local_files_folder
@@ -1142,6 +1454,142 @@ mod tests {
         assert_eq!(restored.queue_width, 300.0);
     }
 
+    /// Every lyrics appearance field added in this round reads from an older
+    /// file with its intended default, and a full customised set survives a
+    /// save and load unchanged.
+    #[test]
+    fn lyrics_appearance_settings_are_backward_compatible_and_round_trip() {
+        use super::{LyricsAlign, LyricsStyle};
+        let older: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(older.lyrics_style, LyricsStyle::Spicy);
+        assert_eq!(older.lyrics_align, LyricsAlign::Left);
+        assert_eq!(older.lyrics_position, 38);
+        assert_eq!(older.lyrics_spacing, 100);
+        assert_eq!(older.lyrics_dim, 100);
+        assert_eq!(older.lyrics_focus_strength, 100);
+        assert_eq!(older.lyrics_bounce_strength, 100);
+        assert_eq!(older.lyrics_glow_strength, 100);
+        assert_eq!(older.lyrics_fade_width, 30);
+        assert_eq!(older.lyrics_line_fade_ms, 300);
+        assert_eq!(older.lyrics_early_scroll_ms, 0);
+        assert_eq!(older.lyrics_scroll_ms, 450);
+        assert!(older.lyrics_smooth_scroll);
+        assert!(older.lyrics_rise);
+        assert!(older.lyrics_scale);
+        assert!(!older.lyrics_hide_passed_lines);
+        assert!(!older.lyrics_simple_mode);
+        assert!(!older.lyrics_minimal_mode);
+        assert!(!older.lyrics_low_performance);
+        assert!(!older.lyrics_join_words);
+        assert!(older.lyrics_duet_padding);
+        assert!(older.lyrics_show_translations);
+        assert!(older.lyrics_show_credits);
+        assert_eq!(older.lyrics_background_dim, 100);
+        assert!(!older.lyrics_cover_color);
+
+        let settings = Settings {
+            lyrics_style: LyricsStyle::AppleMusic,
+            lyrics_align: LyricsAlign::Center,
+            lyrics_position: 55,
+            lyrics_spacing: 140,
+            lyrics_dim: 64,
+            lyrics_focus_strength: 33,
+            lyrics_bounce_strength: 150,
+            lyrics_glow_strength: 70,
+            lyrics_fade_width: 80,
+            lyrics_line_fade_ms: 900,
+            lyrics_early_scroll_ms: 175,
+            lyrics_scroll_ms: 700,
+            lyrics_smooth_scroll: false,
+            lyrics_rise: false,
+            lyrics_scale: false,
+            lyrics_hide_passed_lines: true,
+            lyrics_simple_mode: true,
+            lyrics_minimal_mode: true,
+            lyrics_low_performance: true,
+            lyrics_join_words: true,
+            lyrics_duet_padding: false,
+            lyrics_show_translations: false,
+            lyrics_show_credits: false,
+            lyrics_background_dim: 40,
+            lyrics_cover_color: true,
+            ..Default::default()
+        };
+        let text = serde_json::to_string(&settings).unwrap();
+        let restored: Settings = serde_json::from_str(&text).unwrap();
+        assert_eq!(restored.lyrics_style, LyricsStyle::AppleMusic);
+        assert_eq!(restored.lyrics_align, LyricsAlign::Center);
+        assert_eq!(restored.lyrics_position, 55);
+        assert_eq!(restored.lyrics_spacing, 140);
+        assert_eq!(restored.lyrics_dim, 64);
+        assert_eq!(restored.lyrics_focus_strength, 33);
+        assert_eq!(restored.lyrics_bounce_strength, 150);
+        assert_eq!(restored.lyrics_glow_strength, 70);
+        assert_eq!(restored.lyrics_fade_width, 80);
+        assert_eq!(restored.lyrics_line_fade_ms, 900);
+        assert_eq!(restored.lyrics_early_scroll_ms, 175);
+        assert_eq!(restored.lyrics_scroll_ms, 700);
+        assert!(!restored.lyrics_smooth_scroll);
+        assert!(!restored.lyrics_rise);
+        assert!(!restored.lyrics_scale);
+        assert!(restored.lyrics_hide_passed_lines);
+        assert!(restored.lyrics_simple_mode);
+        assert!(restored.lyrics_minimal_mode);
+        assert!(restored.lyrics_low_performance);
+        assert!(restored.lyrics_join_words);
+        assert!(!restored.lyrics_duet_padding);
+        assert!(!restored.lyrics_show_translations);
+        assert!(!restored.lyrics_show_credits);
+        assert_eq!(restored.lyrics_background_dim, 40);
+        assert!(restored.lyrics_cover_color);
+    }
+
+    /// A preset writes a coherent whole look but never touches the timing,
+    /// fullscreen or performance choices.
+    #[test]
+    fn lyrics_style_presets_restore_a_whole_look() {
+        use super::LyricsStyle;
+        let mut settings = Settings {
+            lyrics_offset_ms: 175,
+            lyrics_line_hold_ms: 250,
+            lyrics_windowed_fullscreen: false,
+            lyrics_low_performance: true,
+            ..Settings::default()
+        };
+
+        settings.apply_lyrics_style(LyricsStyle::Minimal);
+        assert!(settings.lyrics_minimal_mode);
+        assert!(settings.lyrics_simple_mode);
+        assert!(settings.lyrics_hide_passed_lines);
+        assert!(!settings.lyrics_glow);
+        assert!(!settings.lyrics_bounce);
+        assert!(!settings.lyrics_rise);
+        assert!(!settings.lyrics_scale);
+        assert!(settings.lyrics_join_words);
+        assert!(!settings.lyrics_show_translations);
+
+        settings.apply_lyrics_style(LyricsStyle::AppleMusic);
+        assert!(!settings.lyrics_bounce);
+        assert!(settings.lyrics_glow);
+        assert_eq!(settings.lyrics_glow_strength, 55);
+        assert!(settings.lyrics_fade_width >= 60);
+        assert!(!settings.lyrics_hide_passed_lines);
+        assert!(!settings.lyrics_minimal_mode);
+        assert!(!settings.lyrics_simple_mode);
+
+        settings.apply_lyrics_style(LyricsStyle::Spicy);
+        assert!(settings.lyrics_bounce);
+        assert!(settings.lyrics_glow);
+        assert!(settings.lyrics_scale);
+        assert!(!settings.lyrics_join_words);
+        assert!(!settings.lyrics_simple_mode);
+        assert_eq!(settings.lyrics_style, LyricsStyle::Spicy);
+        assert_eq!(settings.lyrics_offset_ms, 175, "presets leave timing alone");
+        assert_eq!(settings.lyrics_line_hold_ms, 250);
+        assert!(!settings.lyrics_windowed_fullscreen);
+        assert!(settings.lyrics_low_performance);
+    }
+
     /// Older files keep the Dock icon; hiding it survives a save (#837).
     #[test]
     fn the_dock_icon_stays_unless_hidden_and_round_trips() {
@@ -1628,11 +2076,33 @@ mod tests {
         let settings = Settings {
             proxy_username: "private-proxy-user".into(),
             proxy_password: "private-proxy-password".into(),
+            spicy_lyrics_key: "private-spicy-token".into(),
             ..Default::default()
         };
         let debug = format!("{settings:?}");
         assert!(!debug.contains("private-proxy-user"));
         assert!(!debug.contains("private-proxy-password"));
+        assert!(!debug.contains("private-spicy-token"));
+    }
+
+    #[test]
+    fn spicy_lyrics_key_and_background_pop_round_trip() {
+        let default_settings = Settings::default();
+        assert!(default_settings.lyrics_background_pop);
+        assert!(default_settings.spicy_lyrics_key.is_empty());
+        let default_json = serde_json::to_string(&default_settings).unwrap();
+        assert!(!default_json.contains("spicy_lyrics_key"));
+
+        let settings = Settings {
+            lyrics_background_pop: false,
+            spicy_lyrics_key: "my-secret-key-123".into(),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&settings).unwrap();
+        assert!(json.contains("my-secret-key-123"));
+        let restored: Settings = serde_json::from_str(&json).unwrap();
+        assert!(!restored.lyrics_background_pop);
+        assert_eq!(restored.spicy_lyrics_key, "my-secret-key-123");
     }
 
     #[test]

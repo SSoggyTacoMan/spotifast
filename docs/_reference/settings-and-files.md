@@ -424,6 +424,40 @@ main fields are:
 | `milkdrop_screen_hz` | `0` | Last refresh rate reported by MilkDrop's window |
 | `milkdrop_fullscreen` | `false` | The MilkDrop window fills the screen |
 | `milkdrop_panel_height` | `232` | The MilkDrop panel's height in the mini player, in skin pixels |
+| `lyrics_font_size` | `100` | Lyrics text size as a percentage of the default, 70 to 160 |
+| `lyrics_glow` | `true` | Soft glow around the sung word |
+| `lyrics_bounce` | `true` | Swell and lift words as they start sounding |
+| `lyrics_distance_blur` | `true` | Fade lines away from the sung line |
+| `lyrics_line_hold_ms` | `0` | Hold the active line before switching, 0 to 500 |
+| `lyrics_offset_ms` | `0` | Shift lyrics timing, in milliseconds, -500 to 500 |
+| `lyrics_windowed_fullscreen` | `true` | Fill the app window instead of entering the system's full screen |
+| `lyrics_style` | `spicy` | Look preset: `spicy`, `apple_music`, or `minimal`; applying one writes the appearance fields below |
+| `lyrics_align` | `left` | Lines sit `left`, `center`, or `right` in the column |
+| `lyrics_position` | `38` | Where the sung line sits in full screen, as a percentage from the top, 15 to 75 |
+| `lyrics_spacing` | `100` | Gap between lines, as a percentage of the default, 50 to 200 |
+| `lyrics_dim` | `100` | Brightness of lines that are not being sung, 20 to 100 |
+| `lyrics_focus_strength` | `100` | How quickly distant lines fade, 0 to 100 |
+| `lyrics_bounce_strength` | `100` | How far words swell and lift, 0 to 200 |
+| `lyrics_glow_strength` | `100` | Glow brightness around the sung word, 0 to 200 |
+| `lyrics_fade_width` | `30` | Soft leading edge of the karaoke fill, 0 to 100 |
+| `lyrics_line_fade_ms` | `300` | How long a line takes to light up or dim, in milliseconds |
+| `lyrics_early_scroll_ms` | `0` | Follow a line this many milliseconds early, 0 to 800 |
+| `lyrics_scroll_ms` | `450` | How long a smooth scroll between lines takes, in milliseconds |
+| `lyrics_smooth_scroll` | `true` | Glide between lines instead of jumping |
+| `lyrics_rise` | `true` | Lift the sung line into place |
+| `lyrics_scale` | `true` | Grow the sung line |
+| `lyrics_hide_passed_lines` | `false` | Hide lines already sung in full screen |
+| `lyrics_simple_mode` | `false` | Drop glow, bounce, rise and ambient colour |
+| `lyrics_minimal_mode` | `false` | Keep only the sung line and the lines ahead |
+| `lyrics_low_performance` | `false` | Fewer repaint frames and lighter glow |
+| `lyrics_join_words` | `false` | Fill each word evenly from its first syllable to its last |
+| `lyrics_duet_padding` | `true` | Step duet lines in from the singer's side |
+| `lyrics_show_translations` | `true` | Show translations and romanisations under the words |
+| `lyrics_show_credits` | `true` | Show the lyrics source and credits at the end |
+| `lyrics_background_dim` | `100` | How dark the artwork behind the lyrics is, 0 to 100 |
+| `lyrics_cover_color` | `false` | Tint sung words with colours from the cover |
+| `lyrics_background_pop` | `true` | Show secondary lines while active and tuck them away afterwards |
+| `spicy_lyrics_key` | none | Developer key for word-synced lyrics from Spicy Lyrics |
 | `lyrics_milkdrop` | `false` | MilkDrop rather than the cover's art behind full screen lyrics |
 | `milkdrop_size` | `640, 480` | The MilkDrop window's size in points |
 | `keep_playing_in_background` | `true` | Close to tray |

@@ -171,19 +171,154 @@ impl Lyrics {
     /// The line being sung at `position_ms`, or `None` before the first one
     /// starts and for lyrics without timing.
     pub fn active_line(&self, position_ms: u32) -> Option<usize> {
-        if !self.synced {
+        self.active_line_with_hold(position_ms, 0)
+    }
+
+    /// The line being sung at `position_ms`, optionally holding the previous line
+    /// for up to `hold_ms` to avoid abrupt line switches.
+    pub fn active_line_with_hold(&self, position_ms: u32, hold_ms: u32) -> Option<usize> {
+        if !self.synced || self.lines.is_empty() {
             return None;
         }
         let started = self
             .lines
             .partition_point(|line| line.at_ms.is_some_and(|at| at <= position_ms));
-        started.checked_sub(1)
+        let current = started.checked_sub(1)?;
+        if hold_ms > 0 && current > 0 {
+            let prev = current - 1;
+            let prev_end = self.lines[prev].end_ms.or(self.lines[current].at_ms);
+            if let Some(end) = prev_end {
+                let hold_until = end.saturating_add(hold_ms);
+                let curr_end = self.lines[current].end_ms.unwrap_or(u32::MAX);
+                if position_ms < hold_until && position_ms < curr_end {
+                    return Some(prev);
+                }
+            }
+        }
+        Some(current)
     }
 
     /// Whether any line carries word-level timing.
     pub fn word_synced(&self) -> bool {
         self.lines.iter().any(Line::has_syllables)
     }
+
+    /// Extends synced lines with interlude indicators during musical breaks.
+    pub fn with_interludes(mut self, minimal_mode: bool) -> Self {
+        if self.synced {
+            self.lines = build_display_timeline(&self.lines, minimal_mode, false);
+        }
+        self
+    }
+}
+
+pub const NORMAL_INTERLUDE_THRESHOLD_MS: u32 = 3_000;
+pub const MINIMAL_INTERLUDE_THRESHOLD_MS: u32 = 5_000;
+const INTERLUDE_TIME_PADDING_MS: f64 = -550.0;
+
+/// The three interlude dots' `(start_ms, end_ms)` times: each fills a third of the gap,
+/// shifted earlier so the last dot finishes 550ms before the next line.
+pub fn interlude_dot_times(start_ms: u32, end_ms: u32) -> [(u32, u32); 3] {
+    let total = (end_ms.saturating_sub(start_ms)) as f64;
+    let base = total / 3.0;
+    let padding = INTERLUDE_TIME_PADDING_MS / 3.0;
+    let start = start_ms as f64;
+    let dot1 = start.max(start + base + padding);
+    let dot2 = dot1.max(start + base * 2.0 + padding * 2.0);
+    let dot3 = dot2.max(start + total + INTERLUDE_TIME_PADDING_MS);
+    let end1 = dot1.round() as u32;
+    let end2 = dot2.round() as u32;
+    let end3 = dot3.round() as u32;
+    [(start_ms, end1), (end1, end2), (end2, end3)]
+}
+
+/// Builds the presentation timeline from lines, inserting interlude lines where vocal
+/// pauses exceed the threshold.
+pub fn build_display_timeline(
+    lines: &[Line],
+    minimal_mode: bool,
+    hold_through_short_gaps: bool,
+) -> Vec<Line> {
+    if lines.is_empty() {
+        return Vec::new();
+    }
+    let threshold = if minimal_mode {
+        MINIMAL_INTERLUDE_THRESHOLD_MS
+    } else {
+        NORMAL_INTERLUDE_THRESHOLD_MS
+    };
+
+    let is_lead = |line: &Line| {
+        !line.text.is_empty() || !line.syllables.is_empty() || !line.background.is_empty()
+    };
+    if !lines.iter().any(is_lead) {
+        return lines.to_vec();
+    }
+
+    let mut timeline = Vec::with_capacity(lines.len() + 8);
+    let mut previous_lead_end: Option<u32> = None;
+    let mut previous_had_lead = false;
+
+    let lead_indices: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(i, l)| if is_lead(l) { Some(i) } else { None })
+        .collect();
+
+    let mut lead_pos = 0;
+    for line in lines {
+        let mut shown = line.clone();
+        if is_lead(line) {
+            let line_start = line.at_ms.unwrap_or(0);
+            let first_syllable_start = line
+                .syllables
+                .iter()
+                .map(|s| s.at_ms)
+                .min()
+                .unwrap_or(line_start);
+            let gap_start = if !previous_had_lead {
+                0
+            } else {
+                previous_lead_end.unwrap_or(line_start)
+            };
+            let gap_end = if !previous_had_lead {
+                first_syllable_start
+            } else {
+                line_start
+            };
+
+            if gap_end.saturating_sub(gap_start) >= threshold
+                && (previous_lead_end.is_some() || !previous_had_lead)
+            {
+                let already_has_interlude = timeline
+                    .last()
+                    .is_some_and(|l: &Line| l.text.is_empty() && l.at_ms.is_some());
+                if !already_has_interlude {
+                    timeline.push(Line {
+                        at_ms: Some(gap_start),
+                        end_ms: Some(gap_end),
+                        ..Line::default()
+                    });
+                }
+            }
+
+            previous_lead_end = line.end_ms;
+            previous_had_lead = true;
+
+            lead_pos += 1;
+            if hold_through_short_gaps && lead_pos < lead_indices.len() {
+                let next_lead = &lines[lead_indices[lead_pos]];
+                if let (Some(curr_end), Some(next_start)) = (line.end_ms, next_lead.at_ms)
+                    && next_start > curr_end
+                    && next_start - curr_end < threshold
+                {
+                    shown.end_ms = Some(next_start);
+                }
+            }
+        }
+        timeline.push(shown);
+    }
+    timeline
 }
 
 /// Parses Spotify's `color-lyrics` response.
@@ -1252,5 +1387,110 @@ mod tests {
         assert_eq!(plain.lines.len(), 1);
         let nothing = Record::default();
         assert!(nothing.lyrics().is_none());
+    }
+
+    #[test]
+    fn active_line_with_hold_retains_previous_line_until_hold_expires() {
+        let lyrics = Lyrics {
+            synced: true,
+            instrumental: false,
+            lines: vec![
+                Line {
+                    at_ms: Some(1000),
+                    end_ms: Some(3000),
+                    text: "First line".into(),
+                    ..Line::default()
+                },
+                Line {
+                    at_ms: Some(3000),
+                    end_ms: Some(5000),
+                    text: "Second line".into(),
+                    ..Line::default()
+                },
+            ],
+            attribution: None,
+            song_writers: Vec::new(),
+        };
+
+        // Without hold: line switches at 3000
+        assert_eq!(lyrics.active_line(2999), Some(0));
+        assert_eq!(lyrics.active_line(3000), Some(1));
+
+        // With hold_ms = 400: line 0 held until 3000 + 400 = 3400
+        assert_eq!(lyrics.active_line_with_hold(3000, 400), Some(0));
+        assert_eq!(lyrics.active_line_with_hold(3399, 400), Some(0));
+        assert_eq!(lyrics.active_line_with_hold(3400, 400), Some(1));
+
+        // When hold_ms is 0, behaves normally
+        assert_eq!(lyrics.active_line_with_hold(3000, 0), Some(1));
+    }
+
+    #[test]
+    fn inserts_interlude_dots_for_vocal_gaps() {
+        let lines = vec![
+            Line {
+                at_ms: Some(0),
+                end_ms: Some(1000),
+                text: "one".into(),
+                ..Line::default()
+            },
+            Line {
+                at_ms: Some(5000),
+                end_ms: Some(6000),
+                text: "two".into(),
+                ..Line::default()
+            },
+        ];
+        let timeline = build_display_timeline(&lines, false, false);
+        assert_eq!(timeline.len(), 3);
+        assert_eq!(timeline[1].text, "");
+        assert_eq!(timeline[1].at_ms, Some(1000));
+        assert_eq!(timeline[1].end_ms, Some(5000));
+    }
+
+    #[test]
+    fn minimal_mode_uses_longer_threshold_and_holds_short_gaps() {
+        let lines = vec![
+            Line {
+                at_ms: Some(0),
+                end_ms: Some(1000),
+                text: "one".into(),
+                ..Line::default()
+            },
+            Line {
+                at_ms: Some(5000),
+                end_ms: Some(6000),
+                text: "two".into(),
+                ..Line::default()
+            },
+            Line {
+                at_ms: Some(12000),
+                end_ms: Some(13000),
+                text: "three".into(),
+                ..Line::default()
+            },
+        ];
+        // 4s gap between one and two: under 5s threshold, so held and no interlude inserted.
+        // 6s gap between two and three: >= 5s threshold, so interlude inserted.
+        let timeline = build_display_timeline(&lines, true, true);
+        assert_eq!(timeline.len(), 4);
+        assert_eq!(timeline[0].end_ms, Some(5000));
+        assert_eq!(timeline[1].text, "two");
+        assert_eq!(timeline[1].end_ms, Some(6000));
+        assert_eq!(timeline[2].text, "");
+        assert_eq!(timeline[2].at_ms, Some(6000));
+        assert_eq!(timeline[2].end_ms, Some(12000));
+    }
+
+    #[test]
+    fn interlude_dot_timing_distributes_three_dots_with_padding() {
+        let times = interlude_dot_times(1000, 4000);
+        assert_eq!(times.len(), 3);
+        assert_eq!(times[0].0, 1000);
+        assert!(times[0].1 > times[0].0);
+        assert_eq!(times[1].0, times[0].1);
+        assert!(times[1].1 > times[1].0);
+        assert_eq!(times[2].0, times[1].1);
+        assert_eq!(times[2].1, 3450); // 4000 - 550 padding
     }
 }

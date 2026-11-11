@@ -62,12 +62,13 @@ Spotifast connects only to the services below.
   the exact lookup is temporarily unavailable. A failed lookup can use older
   cached lyrics, but never caches an outage as a missing transcription.
 - **Spicy Lyrics.** When the lyrics panel is open, a local file has no words,
-  and `SPICY_LYRICS_KEY` or `SPICY_LYRICS_SECRET_KEY` is set, Spotifast sends
-  the Spotify track id to [api.spicylyrics.org](https://developers.spicylyrics.org)
-  with that key. The key identifies your Spicy Lyrics account; no other
-  account data is sent. Answers are cached for 30 days, then discarded. Without
-  a key, or when the API has no sync for the song, Spotify and LRCLIB answer
-  instead.
+  and a key is configured in Settings or via `SPICY_LYRICS_KEY` /
+  `SPICY_LYRICS_SECRET_KEY`, Spotifast sends the Spotify track id to
+  [api.spicylyrics.org](https://developers.spicylyrics.org) with that key.
+  The key identifies your Spicy Lyrics account; no other account data is sent.
+  The key is never written to log files and is omitted from settings export
+  when empty. Answers are cached for 30 days, then discarded. Without a key,
+  or when the API has no sync for the song, Spotify and LRCLIB answer instead.
 - **GitHub.** Once a day, Spotifast asks GitHub for the latest release. You
   can turn automatic checks off in Settings. Downloading an update, and the
   first opening of MilkDrop, also fetch files from GitHub. No Spotify data is
