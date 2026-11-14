@@ -16,9 +16,19 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 
+mod amll;
+mod lrc_red;
+mod netease;
+mod remote;
 mod spicy;
+mod ttml;
+mod unison;
 
+pub use amll::fetch_amll;
+pub use lrc_red::fetch_lrc_red;
+pub use netease::fetch_netease;
 pub use spicy::{attribution_title, fetch_spicy};
+pub use unison::fetch_unison;
 
 const API: &str = "https://lrclib.net/api";
 /// Lyrics do not change; a cached answer is good for this long.
@@ -901,7 +911,7 @@ fn fold(c: char) -> char {
     }
 }
 
-fn loose_match(left: &str, right: &str) -> bool {
+pub(crate) fn loose_match(left: &str, right: &str) -> bool {
     let a = normalize(left);
     let b = normalize(right);
     if a.is_empty() || b.is_empty() {
@@ -993,7 +1003,7 @@ struct Cached {
     found: Option<Lyrics>,
 }
 
-fn cache_key(query: &Query) -> String {
+pub(crate) fn cache_key(query: &Query) -> String {
     let digest = Sha1::digest(
         format!(
             "{}|{}|{}|{}",

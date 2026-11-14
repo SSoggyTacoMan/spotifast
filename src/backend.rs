@@ -4776,8 +4776,10 @@ impl Worker {
         tokio::spawn(async move {
             // A local file's own words go first. Then Spicy Lyrics, which is
             // the only source with timing inside a line, if a key is set.
-            // Spotify's transcription follows, and everything else, a
-            // signed-out session included, falls back to LRCLIB.
+            // The community TTML catalogues follow, then Spotify's
+            // transcription, and everything else, a signed-out session
+            // included, falls back to LRCLIB. Words found without timing are
+            // held back so a synced source later in the chain can still win.
             let own = match request.local_file {
                 Some(file) => tokio::task::spawn_blocking(move || crate::local_tags::lyrics(&file))
                     .await
@@ -4785,29 +4787,53 @@ impl Worker {
                     .flatten(),
                 None => None,
             };
-            let word_synced = match (request.track_id.as_deref(), http.as_ref()) {
-                (Some(id), Ok(client)) => crate::lyrics::fetch_spicy(
-                    client,
-                    &cache_dir,
-                    id,
-                    request.spicy_lyrics_key.as_deref(),
-                )
-                .await
-                .ok()
-                .flatten(),
-                _ => None,
+            let mut fallback: Option<crate::lyrics::Lyrics> = None;
+            let mut found = keep_unsynced(&mut fallback, own);
+            if found.is_none()
+                && let (Some(id), Ok(client)) = (request.track_id.as_deref(), http.as_ref())
+            {
+                found = keep_unsynced(
+                    &mut fallback,
+                    crate::lyrics::fetch_spicy(
+                        client,
+                        &cache_dir,
+                        id,
+                        request.spicy_lyrics_key.as_deref(),
+                    )
+                    .await
+                    .ok()
+                    .flatten(),
+                );
+            }
+            if found.is_none()
+                && let Ok(client) = http.as_ref()
+            {
+                found = remote_lyrics(client, &cache_dir, &request.query, &mut fallback).await;
+            }
+            if found.is_none() {
+                found = keep_unsynced(
+                    &mut fallback,
+                    spotify_lyrics(engine, &request.uri, &cache_dir).await,
+                );
+            }
+            let lrclib = if found.is_none() {
+                match http.as_ref() {
+                    Ok(client) => Some(
+                        crate::lyrics::fetch(client, &cache_dir, &request.query)
+                            .await
+                            .map_err(|error| format!("{error:#}")),
+                    ),
+                    Err(error) => Some(Err(error.clone())),
+                }
+            } else {
+                None
             };
-            let exact = match own.or(word_synced) {
-                Some(found) => Some(found),
-                None => spotify_lyrics(engine, &request.uri, &cache_dir).await,
-            };
-            let result = match exact {
+            let result = match found {
                 Some(found) => Ok(Some(found)),
-                None => match http {
-                    Ok(http) => crate::lyrics::fetch(&http, &cache_dir, &request.query)
-                        .await
-                        .map_err(|error| format!("{error:#}")),
-                    Err(error) => Err(error),
+                None => match lrclib.expect("asked when nothing was found") {
+                    Ok(Some(found)) => Ok(Some(found)),
+                    Ok(None) => Ok(fallback),
+                    Err(error) => fallback.map(Some).ok_or(error),
                 },
             };
             let _ = events.send(Event::Lyrics {
@@ -6435,9 +6461,57 @@ fn settle<T>(result: Result<T, session_reads::Failure>) -> Option<ApiResult<T>> 
     }
 }
 
+/// The community TTML catalogues, in the order the cascade tries them. Each
+/// one is skipped on a miss or an outage, so a provider being down never
+/// hides the next source. An answer without timing is kept aside in
+/// `fallback` and the chain continues, so a later synced source can win.
+async fn remote_lyrics(
+    http: &reqwest::Client,
+    cache_dir: &std::path::Path,
+    query: &crate::lyrics::Query,
+    fallback: &mut Option<crate::lyrics::Lyrics>,
+) -> Option<crate::lyrics::Lyrics> {
+    if let Ok(Some(found)) = crate::lyrics::fetch_amll(http, cache_dir, query).await
+        && let Some(synced) = keep_unsynced(fallback, Some(found))
+    {
+        return Some(synced);
+    }
+    if let Ok(Some(found)) = crate::lyrics::fetch_unison(http, cache_dir, query).await
+        && let Some(synced) = keep_unsynced(fallback, Some(found))
+    {
+        return Some(synced);
+    }
+    if let Ok(Some(found)) = crate::lyrics::fetch_lrc_red(http, cache_dir, query).await
+        && let Some(synced) = keep_unsynced(fallback, Some(found))
+    {
+        return Some(synced);
+    }
+    if let Ok(Some(found)) = crate::lyrics::fetch_netease(http, cache_dir, query).await
+        && let Some(synced) = keep_unsynced(fallback, Some(found))
+    {
+        return Some(synced);
+    }
+    None
+}
+
+/// Keeps words found without timing aside for the end of the chain, so a
+/// source with a sync still gets its turn. The first such answer is the one
+/// kept: the better catalogues answer first.
+fn keep_unsynced(
+    fallback: &mut Option<crate::lyrics::Lyrics>,
+    found: Option<crate::lyrics::Lyrics>,
+) -> Option<crate::lyrics::Lyrics> {
+    let found = found?;
+    if found.synced {
+        return Some(found);
+    }
+    fallback.get_or_insert(found);
+    None
+}
+
 /// Spotify's transcription of the track, when the local session can ask for
-/// one. Answers are cached like LRCLIB's, "none" included; `None` falls
-/// back to LRCLIB.
+/// one. Answers are cached like LRCLIB's, "none" included; `None` lets the
+/// cascade fall through to LRCLIB.
 async fn spotify_lyrics(
     engine: Option<Arc<Engine>>,
     uri: &str,
@@ -9978,6 +10052,24 @@ mod cover_routing_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Words without timing are held for the end of the chain, and the first
+    /// such answer is the one kept, but a synced answer wins immediately.
+    #[test]
+    fn words_without_timing_wait_for_a_synced_source() {
+        let mut fallback = None;
+        let plain = crate::lyrics::from_text("A test line").unwrap();
+        assert_eq!(keep_unsynced(&mut fallback, Some(plain.clone())), None);
+        assert_eq!(fallback, Some(plain.clone()));
+        let other = crate::lyrics::from_text("Other words").unwrap();
+        assert_eq!(keep_unsynced(&mut fallback, Some(other)), None);
+        assert_eq!(fallback, Some(plain));
+        let synced = crate::lyrics::from_text("[00:01.00] A test line").unwrap();
+        assert_eq!(
+            keep_unsynced(&mut fallback, Some(synced.clone())),
+            Some(synced)
+        );
+    }
 
     #[tokio::test]
     async fn soloist_without_a_playback_login_can_still_use_old_spotify_lyrics() {
