@@ -2179,7 +2179,7 @@ mod tests {
             }
         }
         for locale in [crate::i18n::Locale::English, crate::i18n::Locale::German] {
-            for width in [210.0, 250.0, 420.0] {
+            for width in [crate::ui::SIDEBAR_MIN_WIDTH, 250.0, 420.0] {
                 let (ctx, mut app) = accessible_app("library-heading");
                 app.locale = locale;
                 app.settings.sidebar_width = width;
@@ -5217,6 +5217,39 @@ mod tests {
 
     fn frame(ctx: &egui::Context, app: &mut App) {
         frame_events(ctx, app, Vec::new());
+    }
+
+    /// Text drawn by one 1280x800 frame, with where it landed.
+    #[cfg(feature = "demo")]
+    fn screen_texts(ctx: &egui::Context, app: &mut App) -> Vec<(String, egui::Rect)> {
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1280.0, 800.0),
+                )),
+                ..Default::default()
+            },
+            |ui| app.frame_ui(ui),
+        );
+        output.textures_delta.clear();
+        fn walk(shape: &egui::epaint::Shape, out: &mut Vec<(String, egui::Rect)>) {
+            match shape {
+                egui::epaint::Shape::Text(text) => out.push((
+                    text.galley.job.text.clone(),
+                    text.galley.rect.translate(text.pos.to_vec2()),
+                )),
+                egui::epaint::Shape::Vec(shapes) => {
+                    shapes.iter().for_each(|shape| walk(shape, out))
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for shape in &output.shapes {
+            walk(&shape.shape, &mut out);
+        }
+        out
     }
 
     /// Where a line of lyrics was drawn, in a frame of full screen lyrics.
@@ -8819,7 +8852,7 @@ mod tests {
                 // Draw the full Settings page, including MilkDrop.
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
-                    egui::vec2(1280.0, 6000.0),
+                    egui::vec2(1280.0, 8000.0),
                 )),
                 ..Default::default()
             };
@@ -8944,6 +8977,276 @@ mod tests {
         );
         app.backend.shutdown();
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Collapsing keeps the sung line as a preview and the body comes back
+    /// with its scroll viewport intact.
+    #[cfg(feature = "demo")]
+    #[test]
+    fn the_lyrics_card_collapses_to_a_preview_and_opens_again() {
+        let (ctx, mut app) = accessible_app("lyrics-card-collapse");
+        app.backend.set_offline(true);
+        app.show_lyrics_panel = true;
+        app.lyrics = Loadable::Loaded(Some(word_sample_lyrics()));
+        app.lyrics_following = true;
+        let texts = |app: &mut App| screen_texts(&ctx, app);
+        let header_at = |drawn: &[(String, egui::Rect)]| {
+            drawn
+                .iter()
+                .filter(|(text, _)| text == "Lyrics")
+                .map(|(_, rect)| rect.center())
+                .max_by(|a, b| a.x.total_cmp(&b.x))
+                .expect("the card header is drawn")
+        };
+        let body_word = "asleep";
+        let preview_line = "But the night is wide and the road is long";
+        // Let the opening scroll settle before reading the body.
+        for _ in 0..60 {
+            frame(&ctx, &mut app);
+        }
+        let drawn = texts(&mut app);
+        let header = header_at(&drawn);
+        assert!(
+            drawn.iter().any(|(text, _)| text == body_word),
+            "the open card shows the lyrics body: {drawn:?}"
+        );
+
+        frame_events(
+            &ctx,
+            &mut app,
+            pointer_click(header, egui::PointerButton::Primary),
+        );
+        for _ in 0..30 {
+            frame(&ctx, &mut app);
+        }
+        assert!(app.lyrics_card_collapsed);
+        let drawn = texts(&mut app);
+        assert!(
+            !drawn.iter().any(|(text, _)| text == body_word),
+            "the collapsed card hides the lyrics body"
+        );
+        assert!(
+            drawn.iter().any(|(text, _)| text == preview_line),
+            "the collapsed card keeps the sung line as a preview"
+        );
+
+        let preview = drawn
+            .iter()
+            .find(|(text, _)| text == preview_line)
+            .expect("the preview line is drawn")
+            .1
+            .center();
+        frame_events(
+            &ctx,
+            &mut app,
+            pointer_click(preview, egui::PointerButton::Primary),
+        );
+        for _ in 0..30 {
+            frame(&ctx, &mut app);
+        }
+        assert!(!app.lyrics_card_collapsed);
+        let drawn = texts(&mut app);
+        assert!(
+            drawn.iter().any(|(text, _)| text == body_word),
+            "opening again brings the lyrics body back"
+        );
+        assert!(
+            drawn.iter().any(|(text, _)| text == "night"),
+            "opening again centres the sung line: {drawn:?}"
+        );
+        app.backend.shutdown();
+    }
+
+    /// The body has a real viewport: a wheel over it moves the words and
+    /// stops the view following the song.
+    #[cfg(feature = "demo")]
+    #[test]
+    fn the_lyrics_panel_scrolls_by_hand() {
+        let (ctx, mut app) = accessible_app("lyrics-scroll");
+        app.backend.set_offline(true);
+        app.show_lyrics_panel = true;
+        app.lyrics = Loadable::Loaded(Some(word_sample_lyrics()));
+        app.lyrics_following = true;
+        for _ in 0..60 {
+            frame(&ctx, &mut app);
+        }
+        let before = screen_texts(&ctx, &mut app);
+        let coffee = before
+            .iter()
+            .find(|(text, _)| text == "Coffee")
+            .expect("the body shows the next lines")
+            .1;
+        frame_events(
+            &ctx,
+            &mut app,
+            vec![
+                egui::Event::PointerMoved(coffee.center()),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, -260.0),
+                    modifiers: egui::Modifiers::NONE,
+                    phase: egui::TouchPhase::Move,
+                },
+            ],
+        );
+        for _ in 0..30 {
+            frame(&ctx, &mut app);
+        }
+        let after = screen_texts(&ctx, &mut app);
+        let moved = after
+            .iter()
+            .find(|(text, _)| text == "Coffee")
+            .map_or(f32::NEG_INFINITY, |(_, rect)| rect.top());
+        assert!(
+            moved < coffee.top() - 40.0,
+            "the wheel scrolls the body up: {} to {moved}",
+            coffee.top()
+        );
+        assert!(!app.lyrics_following, "hand scrolling stops following");
+        app.backend.shutdown();
+    }
+
+    /// The body keeps a real scroll viewport after the card is collapsed and
+    /// opened again, not just on the first open.
+    #[cfg(feature = "demo")]
+    #[test]
+    fn the_lyrics_panel_still_scrolls_after_reopening() {
+        let (ctx, mut app) = accessible_app("lyrics-reopen-scroll");
+        app.backend.set_offline(true);
+        app.show_lyrics_panel = true;
+        app.lyrics = Loadable::Loaded(Some(word_sample_lyrics()));
+        app.lyrics_following = true;
+        let header_at = |drawn: &[(String, egui::Rect)]| {
+            drawn
+                .iter()
+                .filter(|(text, _)| text == "Lyrics")
+                .map(|(_, rect)| rect.center())
+                .max_by(|a, b| a.x.total_cmp(&b.x))
+                .expect("the card header is drawn")
+        };
+        for _ in 0..60 {
+            frame(&ctx, &mut app);
+        }
+        let drawn = screen_texts(&ctx, &mut app);
+        let header = header_at(&drawn);
+        frame_events(
+            &ctx,
+            &mut app,
+            pointer_click(header, egui::PointerButton::Primary),
+        );
+        for _ in 0..30 {
+            frame(&ctx, &mut app);
+        }
+        assert!(app.lyrics_card_collapsed);
+
+        let drawn = screen_texts(&ctx, &mut app);
+        let header = header_at(&drawn);
+        frame_events(
+            &ctx,
+            &mut app,
+            pointer_click(header, egui::PointerButton::Primary),
+        );
+        for _ in 0..30 {
+            frame(&ctx, &mut app);
+        }
+        assert!(!app.lyrics_card_collapsed);
+
+        let before = screen_texts(&ctx, &mut app);
+        let asleep = before
+            .iter()
+            .find(|(text, _)| text == "asleep")
+            .expect("the reopened body shows the later lines")
+            .1;
+        frame_events(
+            &ctx,
+            &mut app,
+            vec![
+                egui::Event::PointerMoved(asleep.center()),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, -260.0),
+                    modifiers: egui::Modifiers::NONE,
+                    phase: egui::TouchPhase::Move,
+                },
+            ],
+        );
+        for _ in 0..30 {
+            frame(&ctx, &mut app);
+        }
+        let after = screen_texts(&ctx, &mut app);
+        let moved = after
+            .iter()
+            .find(|(text, _)| text == "asleep")
+            .map_or(f32::NEG_INFINITY, |(_, rect)| rect.top());
+        assert!(
+            moved < asleep.top() - 40.0,
+            "the reopened body scrolls: {} to {moved}",
+            asleep.top()
+        );
+        assert!(!app.lyrics_following, "hand scrolling stops following");
+        app.backend.shutdown();
+    }
+
+    /// The panel edge drags: its width follows the pointer and is saved.
+    #[test]
+    fn the_lyrics_panel_resizes_by_dragging_its_edge() {
+        use egui::PointerButton::Primary;
+        let (ctx, mut app) = accessible_app("lyrics-resize");
+        app.backend.set_offline(true);
+        app.show_lyrics_panel = true;
+        app.settings.lyrics_width = 360.0;
+        for _ in 0..4 {
+            frame(&ctx, &mut app);
+        }
+        let panel_state = |ctx: &egui::Context| {
+            egui::containers::panel::PanelState::load(ctx, egui::Id::new("lyrics-panel"))
+                .expect("the panel has drawn")
+                .size()
+                .x
+        };
+        let before = panel_state(&ctx);
+        let left = egui::containers::panel::PanelState::load(&ctx, egui::Id::new("lyrics-panel"))
+            .unwrap()
+            .outer_rect
+            .left();
+        let edge = egui::pos2(left + 3.0, 300.0);
+        frame_events(&ctx, &mut app, vec![egui::Event::PointerMoved(edge)]);
+        frame_events(
+            &ctx,
+            &mut app,
+            vec![egui::Event::PointerButton {
+                pos: edge,
+                button: Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        let dragged = edge - egui::vec2(80.0, 0.0);
+        frame_events(&ctx, &mut app, vec![egui::Event::PointerMoved(dragged)]);
+        frame_events(
+            &ctx,
+            &mut app,
+            vec![egui::Event::PointerButton {
+                pos: dragged,
+                button: Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        for _ in 0..4 {
+            frame(&ctx, &mut app);
+        }
+        let after = panel_state(&ctx);
+        assert!(
+            after > before + 40.0,
+            "dragging the edge left widens the panel: {before} to {after}"
+        );
+        assert!(
+            app.settings.lyrics_width > 360.0 + 40.0,
+            "the chosen width is saved: {}",
+            app.settings.lyrics_width
+        );
+        app.backend.shutdown();
     }
 
     /// Rule: side-panel headers stay on one line at their narrowest width.

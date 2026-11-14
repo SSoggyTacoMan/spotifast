@@ -9,7 +9,7 @@ use crate::app::App;
 use crate::i18n::{gettext, pgettext};
 use crate::lyrics::{Line, Lyrics};
 use crate::model::{Action, Loadable, Page};
-use crate::settings::{LyricsAlign, LyricsStyle};
+use crate::settings::{LyricsAlign, LyricsStyle, SyllableMerge};
 use crate::theme::{self, Icon};
 
 use super::widgets;
@@ -76,76 +76,82 @@ fn paint_glow(
     }
 }
 
-/// A word swells and lifts smoothly as it starts sounding, then settles
-/// onto the baseline, the way Spicy Lyrics' word spring moves. The timing is
-/// in the lyric clock, so seeking backwards replays the bounce and pausing
-/// freezes it where it is. `strength` scales the whole gesture.
-fn word_bounce(position_ms: u32, at_ms: u32, size: f32, strength: f32) -> (f32, f32) {
-    const SECONDS: f32 = 0.48;
+/// A subtle swell across one word's sounding time. It starts and ends at
+/// rest, so no word can pop in or out, and it is deterministic: there is no
+/// per-word random variation. `strength` is the setting as a factor, where
+/// 1.0 is the default 100 percent.
+fn word_swell(progress: f32, font_size: f32, strength: f32) -> (f32, f32) {
     if strength <= 0.0 {
         return (1.0, 0.0);
     }
-    let elapsed = position_ms.saturating_sub(at_ms) as f32 / 1000.0;
-    if elapsed >= SECONDS {
+    let p = progress.clamp(0.0, 1.0);
+    if p <= 0.0 || p >= 1.0 {
         return (1.0, 0.0);
     }
-    let t = (elapsed / SECONDS).clamp(0.0, 1.0);
-    let pulse = (t * std::f32::consts::PI).sin();
-    let ease = pulse * pulse * (1.0 - 0.25 * t) * strength;
-    (1.0 + 0.06 * ease, -size * 0.05 * ease)
+    // Rise through the sung part, then settle over the last third: the
+    // reference word spring peaks around 0.7 of the word, not at its middle.
+    let up = smoothstep01(p / 0.7);
+    let down = smoothstep01((p - 0.7) / 0.3);
+    let bump = up * (1.0 - down);
+    let amount = strength.clamp(0.0, 2.0);
+    (
+        1.0 + 0.035 * amount * bump,
+        -font_size * 0.020 * amount * bump,
+    )
 }
 
-fn word_bounce_varied(
-    position_ms: u32,
-    at_ms: u32,
-    size: f32,
-    strength: f32,
-    seed: usize,
-) -> (f32, f32) {
-    let (scale, lift) = word_bounce(position_ms, at_ms, size, strength);
-    if (scale - 1.0).abs() <= 0.0001 && lift.abs() <= 0.0001 {
-        return (scale, lift);
+fn smoothstep01(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// The reference glow spline: dark at the word's start, full through its
+/// middle, dark again when it has been sung.
+fn glow_level(progress: f32) -> f32 {
+    let p = progress.clamp(0.0, 1.0);
+    if p <= 0.0 || p >= 1.0 {
+        0.0
+    } else if p < 0.15 {
+        smoothstep01(p / 0.15)
+    } else if p < 0.6 {
+        1.0
+    } else {
+        smoothstep01((1.0 - p) / 0.4)
     }
-    let factor = 1.0 + 0.12 * ((seed as f32 * 1.618_034).sin());
-    (1.0 + (scale - 1.0) * factor, lift * factor)
 }
 
-/// Paints one galley with a scale-and-lift around `pivot`.
+/// Paints one galley through an optional scale-and-lift transform.
 fn paint_lifted(
     painter: &egui::Painter,
     pos: egui::Pos2,
     galley: std::sync::Arc<Galley>,
     color: Color32,
-    pivot: egui::Pos2,
-    scale: f32,
-    lift: f32,
+    transform: Option<egui::emath::TSTransform>,
 ) {
-    let transform =
-        egui::emath::TSTransform::new(pivot.to_vec2() * (1.0 - scale) + vec2(0.0, lift), scale);
-    let mut shape = egui::epaint::TextShape::new(pos, galley, color);
-    shape.transform(transform);
+    let mut shape =
+        egui::epaint::TextShape::new(pos, galley, color).with_override_text_color(color);
+    if let Some(transform) = transform {
+        shape.transform(transform);
+    }
     painter.add(shape);
 }
 
 /// The same, for the soft stamps around a lifted word.
-#[allow(clippy::too_many_arguments)]
 fn paint_lifted_glow(
     painter: &egui::Painter,
     pos: egui::Pos2,
     galley: &std::sync::Arc<Galley>,
     color: Color32,
-    pivot: egui::Pos2,
-    scale: f32,
-    lift: f32,
+    transform: Option<egui::emath::TSTransform>,
     radius: f32,
     dense: bool,
 ) {
-    let transform =
-        egui::emath::TSTransform::new(pivot.to_vec2() * (1.0 - scale) + vec2(0.0, lift), scale);
     let stamp_color = color.gamma_multiply(if dense { 0.25 } else { 0.45 });
     let mut stamp = egui::epaint::TextShape::new(pos, galley.clone(), stamp_color)
         .with_override_text_color(stamp_color);
-    stamp.transform(transform);
+    if let Some(transform) = transform {
+        stamp.transform(transform);
+    }
     let stamps: &[(f32, f32)] = if dense {
         &[
             (-1.0, 0.0),
@@ -167,9 +173,66 @@ fn paint_lifted_glow(
     }
 }
 
+/// Composes two transforms: `outer` is applied after `inner`.
+fn combine_transform(
+    outer: Option<egui::emath::TSTransform>,
+    inner: Option<egui::emath::TSTransform>,
+) -> Option<egui::emath::TSTransform> {
+    match (outer, inner) {
+        (Some(outer), Some(inner)) => Some(outer * inner),
+        (Some(transform), None) | (None, Some(transform)) => Some(transform),
+        (None, None) => None,
+    }
+}
+
+/// A held word's syllables swell, spread and lift one after another, like
+/// the letter emphasis in Spicy Lyrics' mobile renderer. Short words and
+/// unsplit words keep just the quieter whole-word swell.
+fn piece_emphasis(
+    index: usize,
+    count: usize,
+    progress: f32,
+    duration_ms: f32,
+    font_size: f32,
+    amount: f32,
+) -> (f32, f32, f32) {
+    if count < 2 || duration_ms < 1_000.0 || amount <= 0.0 {
+        return (1.0, 0.0, 0.0);
+    }
+    let grow = (duration_ms / 2_000.0).max(1.0).sqrt().min(1.25);
+    let weight = 0.07 * amount * grow;
+    let at = progress - 0.4 * index as f32 / count as f32;
+    let bump = if at <= 0.0 || at >= 1.0 {
+        0.0
+    } else if at < 0.5 {
+        smoothstep01(at / 0.5)
+    } else {
+        1.0 - smoothstep01((at - 0.5) / 0.5)
+    };
+    let center = (count as f32 - 1.0) * 0.5;
+    let spread = -font_size * 0.03 * amount * grow * bump * (center - index as f32);
+    (
+        1.0 + weight * bump,
+        -font_size * 0.025 * amount * grow * bump,
+        spread,
+    )
+}
+
 fn blend(from: egui::Color32, to: egui::Color32, t: f32) -> egui::Color32 {
     let t = t.clamp(0.0, 1.0);
     egui::Color32::from(egui::Rgba::from(from) * (1.0 - t) + egui::Rgba::from(to) * t)
+}
+
+/// Scales a color's alpha without darkening its RGB. `Color32` stores
+/// premultiplied components, so unmultiply first.
+fn with_alpha(color: Color32, alpha: f32) -> Color32 {
+    let [r, g, b, a] = color.to_srgba_unmultiplied();
+    Color32::from_rgba_unmultiplied(
+        r,
+        g,
+        b,
+        (f32::from(a) * alpha.clamp(0.0, 1.0)).round() as u8,
+    )
 }
 
 /// How far a row shifts to sit left, centred or right inside its column.
@@ -194,7 +257,8 @@ struct MotionLook {
     dim: f32,
     rise: bool,
     active_growth: f32,
-    join_words: bool,
+    syllable_merge: SyllableMerge,
+    word_motion_boost: f32,
     low_performance: bool,
     align: LyricsAlign,
     duet_padding: bool,
@@ -233,7 +297,12 @@ impl MotionLook {
             } else {
                 1.0
             },
-            join_words: settings.lyrics_join_words,
+            syllable_merge: settings.lyrics_syllable_merge,
+            word_motion_boost: if settings.lyrics_word_motion_boost {
+                1.25
+            } else {
+                1.0
+            },
             low_performance: settings.lyrics_low_performance,
             align: settings.lyrics_align,
             duet_padding: settings.lyrics_duet_padding,
@@ -262,7 +331,8 @@ impl MotionLook {
             wrap,
             fade_width: self.fade_width,
             bounce: self.bounce,
-            join_words: self.join_words,
+            syllable_merge: self.syllable_merge,
+            word_motion_boost: self.word_motion_boost,
             rise,
             align: self.align,
             duet_padding: self.duet_padding,
@@ -285,7 +355,8 @@ struct LineLook {
     wrap: f32,
     fade_width: f32,
     bounce: f32,
-    join_words: bool,
+    syllable_merge: SyllableMerge,
+    word_motion_boost: f32,
     rise: f32,
     align: LyricsAlign,
     duet_padding: bool,
@@ -480,7 +551,7 @@ fn layout_word_line(
                 wrap,
                 indent,
                 look.align,
-                true,
+                bright,
                 glow,
                 bg_y_offset,
             )
@@ -577,17 +648,37 @@ fn joined_field_owned(
     (!text.is_empty()).then_some(text)
 }
 
-/// Paints the karaoke fill up to `progress` of a syllable, with a soft
-/// leading edge rather than a hard clip. The edge is a handful of translucent
-/// slices, which reads as Apple Music's word mask without a shader.
+/// How much of `piece` is filled when its run is filled up to `filled`: the
+/// run's filled width minus the piece's own offset, clamped to the piece.
+/// Mapping one run-wide width into each piece keeps a merged word's front
+/// single and continuous instead of restarting at every syllable.
+fn piece_filled(filled: f32, offset: f32, width: f32) -> f32 {
+    (filled - offset).clamp(0.0, width)
+}
+
+/// Where the karaoke gradient's bright side ends (`start`) and its dim side
+/// begins (`end`), as fractions of one word's width. The reference moves the
+/// gradient from -20 percent to 100 percent, so the front travels 120 percent
+/// of the word while a soft band trails it.
+fn fill_edge(progress: f32, fade: f32) -> (f32, f32) {
+    let end = (progress.clamp(0.0, 1.0) * 1.2).min(1.2);
+    (end - fade.max(0.0), end)
+}
+
+/// Paints the karaoke fill up to `filled` points into a run of text, with a
+/// soft leading edge rather than a hard clip. `offset` is where `galley`
+/// starts inside that run, so a kept-together word sweeps across all its
+/// syllables with one edge. The edge is a handful of translucent slices,
+/// which reads as Apple Music's word mask without a shader.
 #[allow(clippy::too_many_arguments)]
 fn paint_word_fill(
     painter: &egui::Painter,
     pos: egui::Pos2,
     galley: &std::sync::Arc<Galley>,
     color: Color32,
-    progress: f32,
-    fade_width: f32,
+    filled: f32,
+    offset: f32,
+    edge: f32,
     bounds: Rect,
     transform: Option<egui::emath::TSTransform>,
 ) {
@@ -622,32 +713,184 @@ fn paint_word_fill(
     }
 
     let width = galley.size().x;
-    if width <= 0.0 || progress <= 0.0 {
+    let local_filled = piece_filled(filled, offset, width);
+    if width <= 0.0 || local_filled <= 0.0 {
         return;
     }
-    let filled = width * progress.clamp(0.0, 1.0);
-    if progress >= 1.0 || fade_width <= 0.0 {
+    if filled >= offset + width || edge <= 0.0 {
         slice(
-            painter, pos, galley, color, bounds, transform, 0.0, filled, 1.0,
+            painter,
+            pos,
+            galley,
+            color,
+            bounds,
+            transform,
+            0.0,
+            local_filled,
+            1.0,
         );
         return;
     }
-    let edge = (width * fade_width.min(1.0)).min(filled);
-    let solid = filled - edge;
+    // The edge is one run-wide band. It may start left of this piece, so a
+    // word just beginning builds up from its tip instead of popping.
+    let edge = edge.max(f32::EPSILON);
+    let edge_start = filled - edge;
+    let solid = (edge_start - offset).clamp(0.0, local_filled);
     if solid > 0.0 {
         slice(
             painter, pos, galley, color, bounds, transform, 0.0, solid, 1.0,
         );
     }
-    const STEPS: usize = 10;
+    if solid >= local_filled {
+        return;
+    }
+    const STEPS: usize = 24;
     for step in 1..=STEPS {
-        let from = solid + edge * (step as f32 - 1.0) / STEPS as f32;
-        let to = solid + edge * step as f32 / STEPS as f32;
-        let t = step as f32 / STEPS as f32;
-        let opacity = t * t * (3.0 - 2.0 * t);
+        let from = solid + (local_filled - solid) * (step as f32 - 1.0) / STEPS as f32;
+        let to = solid + (local_filled - solid) * step as f32 / STEPS as f32;
+        let at = (offset + from - edge_start) / edge;
+        let opacity = at.clamp(0.0, 1.0);
         slice(
             painter, pos, galley, color, bounds, transform, from, to, opacity,
         );
+    }
+}
+
+/// Silence between two parts of a word beyond which one fill would run
+/// through it.
+const MAX_JOIN_GAP_MS: u32 = 100;
+/// A part sung this many times faster or slower per character than the word
+/// as a whole stays split.
+const MAX_PACE_RATIO: f32 = 3.0;
+/// A word held this long reads as one sustained sound when merged.
+const HELD_WORD_MS: u32 = 1_000;
+
+/// Hyphens, dashes and the slash join two words; they do not make one.
+const WORD_JOINERS: [char; 8] = ['/', '-', '‐', '‑', '‒', '–', '—', '―'];
+
+/// Scripts written without spaces between words, where a glued syllable only
+/// means it is on the same line.
+fn is_unspaced(character: char) -> bool {
+    matches!(character as u32,
+        0x0E00..=0x0EFF
+            | 0x1000..=0x109F
+            | 0x1780..=0x17FF
+            | 0x2E80..=0x2FDF
+            | 0x3005..=0x3007
+            | 0x3021..=0x3029
+            | 0x3038..=0x303B
+            | 0x3040..=0x30FF
+            | 0x31F0..=0x31FF
+            | 0x3400..=0x4DBF
+            | 0x4E00..=0x9FFF
+            | 0xF900..=0xFAFF
+            | 0xFF66..=0xFF9F
+            | 0x20000..=0x323AF
+    )
+}
+
+/// Whether `next`, glued to `previous` with no space, is still a word of its
+/// own: across a hyphen, dash or slash, or in a script written without spaces
+/// between words.
+fn starts_new_word(previous: &WordPiece, next: &WordPiece) -> bool {
+    let before = previous.galley.text().trim_end();
+    let after = next.galley.text().trim_start();
+    let (Some(last), Some(first)) = (before.chars().last(), after.chars().next()) else {
+        return true;
+    };
+    WORD_JOINERS.contains(&last)
+        || WORD_JOINERS.contains(&first)
+        || is_unspaced(last)
+        || is_unspaced(first)
+}
+
+/// Whether one fill should run across the whole cluster.
+fn merges_cluster(cluster: &WordCluster, mode: SyllableMerge) -> bool {
+    if cluster.pieces.len() < 2 || mode == SyllableMerge::Off {
+        return false;
+    }
+    if cluster
+        .pieces
+        .windows(2)
+        .any(|pair| starts_new_word(&pair[0], &pair[1]))
+    {
+        return false;
+    }
+    match mode {
+        SyllableMerge::Off => false,
+        SyllableMerge::Full => true,
+        SyllableMerge::Steady => joins_evenly(cluster),
+        SyllableMerge::Held => {
+            let start = cluster.pieces.first().map_or(0, |piece| piece.at_ms);
+            let end = cluster
+                .pieces
+                .iter()
+                .map(|piece| piece.end_ms)
+                .max()
+                .unwrap_or(start);
+            end.saturating_sub(start) >= HELD_WORD_MS
+        }
+    }
+}
+
+/// Whether a run of glued syllables reads as one word sung steadily: no gap
+/// between its parts, no space inside one, no trailing dash on any but the
+/// last, and no part sung much faster or slower per character than the whole.
+fn joins_evenly(cluster: &WordCluster) -> bool {
+    let pieces = &cluster.pieces;
+    if pieces.len() < 2 {
+        return false;
+    }
+    let last = pieces.len() - 1;
+    for (index, piece) in pieces.iter().enumerate() {
+        let text = piece.galley.text();
+        let visible = if index == last { text.trim_end() } else { text };
+        if visible.chars().any(char::is_whitespace) {
+            return false;
+        }
+    }
+    for pair in pieces.windows(2) {
+        if pair[1].at_ms.saturating_sub(pair[0].end_ms) > MAX_JOIN_GAP_MS {
+            return false;
+        }
+    }
+    let start = pieces[0].at_ms;
+    let end = pieces
+        .iter()
+        .map(|piece| piece.end_ms)
+        .max()
+        .unwrap_or(start);
+    let total = end.saturating_sub(start);
+    let characters: usize = pieces
+        .iter()
+        .map(|piece| piece.galley.text().trim_end().chars().count())
+        .sum();
+    if total == 0 || characters == 0 {
+        return false;
+    }
+    pieces.iter().all(|piece| {
+        let duration = piece.end_ms.saturating_sub(piece.at_ms);
+        let time_share = duration as f32 / total as f32;
+        let char_share = piece.galley.text().trim_end().chars().count() as f32 / characters as f32;
+        time_share >= char_share / MAX_PACE_RATIO && time_share <= char_share * MAX_PACE_RATIO
+    })
+}
+
+/// Multiplies the grow and lift of a sung word.
+fn boosted_motion(scale: f32, lift: f32, boost: f32) -> (f32, f32) {
+    if boost == 1.0 {
+        return (scale, lift);
+    }
+    (1.0 + (scale - 1.0) * boost, lift * boost)
+}
+
+/// Where tapping a line seeks. The player fades audio back in after a seek,
+/// so starting a little early keeps the first syllable audible.
+fn seek_target(at_ms: u32, compensate: bool) -> u32 {
+    if compensate {
+        at_ms.saturating_sub(300)
+    } else {
+        at_ms
     }
 }
 
@@ -683,6 +926,7 @@ fn paint_word_line(
     line: &Line,
     position_ms: u32,
     active: bool,
+    fill_strength: f32,
     look: &LineLook,
     line_index: usize,
 ) -> (egui::Response, f32) {
@@ -707,7 +951,14 @@ fn paint_word_line(
             ui.allocate_exact_size(vec2(look.wrap.max(1.0), height), Sense::click());
         return (response, height);
     }
-    let layout = layout_word_line(ui, line, look, active, active && look.glow.a() > 0, bg_pop);
+    let layout = layout_word_line(
+        ui,
+        line,
+        look,
+        fill_strength > 0.01,
+        active && look.glow.a() > 0,
+        bg_pop,
+    );
     if bg_pop <= 0.01 && cached_height != Some(layout.height) {
         ui.data_mut(|d| d.insert_temp(cache_id, layout.height));
     }
@@ -721,16 +972,21 @@ fn paint_word_line(
         rect.min - vec2(8.0, 8.0),
         rect.max + vec2(8.0, look.rise.max(0.0) + 8.0),
     );
-    for (cluster_idx, cluster) in layout.clusters.iter().enumerate() {
+    let fill_strength = fill_strength.clamp(0.0, 1.0);
+    for cluster in &layout.clusters {
         let start = cluster.pieces.first().map_or(0, |piece| piece.at_ms);
-        let (scale, lift) = if active {
-            word_bounce_varied(
-                position_ms,
-                start,
-                look.font.size,
-                look.bounce,
-                line_index * 31 + cluster_idx,
-            )
+        let cluster_end = cluster
+            .pieces
+            .iter()
+            .map(|piece| piece.end_ms)
+            .max()
+            .unwrap_or(start)
+            .max(start);
+        let cluster_progress = crate::lyrics::span_progress(start, cluster_end, position_ms);
+        let merged = merges_cluster(cluster, look.syllable_merge);
+        let (scale, lift) = if fill_strength > 0.01 {
+            let (scale, lift) = word_swell(cluster_progress, look.font.size, look.bounce);
+            boosted_motion(scale, lift, look.word_motion_boost)
         } else {
             (1.0, 0.0)
         };
@@ -748,92 +1004,107 @@ fn paint_word_line(
                     look.rise + first.pos.y + first.galley.size().y * 0.78,
                 )
         });
-        let transform = lifted.then(|| {
+        let cluster_transform = lifted.then(|| {
             egui::emath::TSTransform::new(pivot.to_vec2() * (1.0 - scale) + vec2(0.0, lift), scale)
         });
-        let cluster_end = cluster
+        let cluster_width: f32 = cluster
             .pieces
             .iter()
-            .map(|piece| piece.end_ms)
-            .max()
-            .unwrap_or(start)
-            .max(start);
-        for piece in &cluster.pieces {
+            .map(|piece| piece.galley.size().x)
+            .sum();
+        let cluster_left = cluster.pieces.first().map_or(0.0, |piece| piece.pos.x);
+        let (_, cluster_end_fraction) = fill_edge(cluster_progress, look.fade_width);
+        let cluster_filled = cluster_width * cluster_end_fraction;
+        let cluster_edge = cluster_width * look.fade_width;
+        for (piece_index, piece) in cluster.pieces.iter().enumerate() {
             let pos = rect.min + piece.pos.to_vec2() + vec2(0.0, look.rise);
-            if lifted {
-                paint_lifted(
-                    painter,
-                    pos,
-                    piece.galley.clone(),
-                    look.base,
-                    pivot,
-                    scale,
-                    lift,
-                );
-            } else {
-                painter.galley(pos, piece.galley.clone(), look.base);
-            }
-            if !piece.bright {
-                continue;
-            }
-            let progress = if look.join_words {
-                crate::lyrics::span_progress(start, cluster_end, position_ms)
+            let width = piece.galley.size().x;
+            let piece_progress = if merged {
+                cluster_progress
             } else {
                 crate::lyrics::span_progress(piece.at_ms, piece.end_ms, position_ms)
             };
-            if progress <= 0.0 {
-                continue;
+            let (filled, edge, offset) = if merged {
+                (cluster_filled, cluster_edge, piece.pos.x - cluster_left)
+            } else {
+                let (_, end) = fill_edge(piece_progress, look.fade_width);
+                (width * end, width * look.fade_width, 0.0)
+            };
+            let local_filled = piece_filled(filled, offset, width);
+            let (piece_scale, piece_lift, piece_shift) = piece_emphasis(
+                piece_index,
+                cluster.pieces.len(),
+                cluster_progress,
+                (cluster_end - start) as f32,
+                look.font.size,
+                look.bounce * look.word_motion_boost,
+            );
+            let piece_transform = (piece_scale - 1.0).abs() > 0.001
+                || piece_lift.abs() > 0.01
+                || piece_shift.abs() > 0.01;
+            let piece_transform = piece_transform.then(|| {
+                let piece_pivot = pos + vec2(width * 0.5, piece.galley.size().y * 0.5);
+                egui::emath::TSTransform::new(
+                    piece_pivot.to_vec2() * (1.0 - piece_scale) + vec2(piece_shift, piece_lift),
+                    piece_scale,
+                )
+            });
+            let transform = combine_transform(cluster_transform, piece_transform);
+            if piece.glow && look.glow.a() > 0 && fill_strength > 0.01 && local_filled > 0.0 {
+                let glow = with_alpha(look.glow, glow_level(piece_progress) * fill_strength);
+                if glow.a() > 0 {
+                    let radius =
+                        (look.font.size * 0.12).clamp(2.0, 5.0) * (0.6 + 0.4 * look.glow_strength);
+                    let mut glow_clip =
+                        Rect::from_min_max(pos, pos2(pos.x + width, pos.y + piece.galley.size().y));
+                    if let Some(transform) = transform {
+                        glow_clip = Rect::from_min_max(
+                            transform.mul_pos(glow_clip.min),
+                            transform.mul_pos(glow_clip.max),
+                        );
+                    }
+                    let glow_clip = glow_clip
+                        .expand2(vec2(radius + 1.0, radius + 1.0))
+                        .intersect(bounds);
+                    let clipped_glow = painter.with_clip_rect(glow_clip);
+                    if transform.is_some() {
+                        paint_lifted_glow(
+                            &clipped_glow,
+                            pos,
+                            &piece.galley,
+                            glow,
+                            transform,
+                            radius,
+                            look.glow_dense,
+                        );
+                    } else {
+                        paint_glow(
+                            &clipped_glow,
+                            pos,
+                            &piece.galley,
+                            glow,
+                            radius,
+                            look.glow_dense,
+                        );
+                    }
+                }
             }
-            if piece.glow && look.glow.a() > 0 {
-                let radius =
-                    (look.font.size * 0.09).clamp(1.5, 3.2) * (0.6 + 0.4 * look.glow_strength);
-                let mut glow_clip = Rect::from_min_max(
-                    pos,
-                    pos2(
-                        pos.x + piece.galley.size().x * progress,
-                        pos.y + piece.galley.size().y,
-                    ),
-                );
-                if let Some(transform) = transform {
-                    glow_clip = Rect::from_min_max(
-                        transform.mul_pos(glow_clip.min),
-                        transform.mul_pos(glow_clip.max),
-                    );
-                }
-                let glow_clip = glow_clip
-                    .expand2(vec2(radius + 1.0, radius + 1.0))
-                    .intersect(bounds);
-                let clipped_glow = painter.with_clip_rect(glow_clip);
-                if lifted {
-                    paint_lifted_glow(
-                        &clipped_glow,
-                        pos,
-                        &piece.galley,
-                        look.glow,
-                        pivot,
-                        scale,
-                        lift,
-                        radius,
-                        look.glow_dense,
-                    );
-                } else {
-                    paint_glow(
-                        &clipped_glow,
-                        pos,
-                        &piece.galley,
-                        look.glow,
-                        radius,
-                        look.glow_dense,
-                    );
-                }
+            if transform.is_some() {
+                paint_lifted(painter, pos, piece.galley.clone(), look.base, transform);
+            } else {
+                painter.galley_with_override_text_color(pos, piece.galley.clone(), look.base);
+            }
+            if !piece.bright || fill_strength <= 0.01 || local_filled <= 0.0 {
+                continue;
             }
             paint_word_fill(
                 painter,
                 pos,
                 &piece.galley,
-                look.fill,
-                progress,
-                look.fade_width,
+                with_alpha(look.fill, fill_strength),
+                filled,
+                offset,
+                edge,
                 bounds,
                 transform,
             );
@@ -842,9 +1113,9 @@ fn paint_word_line(
     if bg_pop > 0.01 && !layout.background_clusters.is_empty() {
         let bg_size = (look.font.size * 0.72).max(11.0);
         let bg_base = look.base.gamma_multiply(0.72 * bg_pop);
-        let bg_fill = look.fill.gamma_multiply(0.88 * bg_pop);
-        let bg_glow = look.glow.gamma_multiply(0.85 * bg_pop);
-        for (cluster_idx, cluster) in layout.background_clusters.iter().enumerate() {
+        let bg_fill = with_alpha(look.fill, fill_strength * 0.70 * bg_pop);
+        let bg_glow = with_alpha(look.glow, fill_strength * 0.85 * bg_pop);
+        for cluster in &layout.background_clusters {
             let start = cluster.pieces.first().map_or(0, |piece| piece.at_ms);
             let cluster_end = cluster
                 .pieces
@@ -853,14 +1124,11 @@ fn paint_word_line(
                 .max()
                 .unwrap_or(start)
                 .max(start);
-            let (scale, lift) = if active {
-                word_bounce_varied(
-                    position_ms,
-                    start,
-                    bg_size,
-                    look.bounce * 0.65,
-                    line_index * 53 + cluster_idx + 7,
-                )
+            let cluster_progress = crate::lyrics::span_progress(start, cluster_end, position_ms);
+            let merged = merges_cluster(cluster, look.syllable_merge);
+            let (scale, lift) = if fill_strength > 0.01 {
+                let (scale, lift) = word_swell(cluster_progress, bg_size, look.bounce * 0.65);
+                boosted_motion(scale, lift, look.word_motion_boost)
             } else {
                 (1.0, 0.0)
             };
@@ -878,85 +1146,112 @@ fn paint_word_line(
                         look.rise + first.pos.y + first.galley.size().y * 0.78,
                     )
             });
-            let transform = lifted.then(|| {
+            let cluster_transform = lifted.then(|| {
                 egui::emath::TSTransform::new(
                     pivot.to_vec2() * (1.0 - scale) + vec2(0.0, lift),
                     scale,
                 )
             });
-            for piece in &cluster.pieces {
+            let cluster_width: f32 = cluster
+                .pieces
+                .iter()
+                .map(|piece| piece.galley.size().x)
+                .sum();
+            let cluster_left = cluster.pieces.first().map_or(0.0, |piece| piece.pos.x);
+            let (_, cluster_end_fraction) = fill_edge(cluster_progress, look.fade_width);
+            let cluster_filled = cluster_width * cluster_end_fraction;
+            let cluster_edge = cluster_width * look.fade_width;
+            for (piece_index, piece) in cluster.pieces.iter().enumerate() {
                 let pos = rect.min + piece.pos.to_vec2() + vec2(0.0, look.rise);
-                if lifted {
-                    paint_lifted(
-                        painter,
-                        pos,
-                        piece.galley.clone(),
-                        bg_base,
-                        pivot,
-                        scale,
-                        lift,
-                    );
-                } else {
-                    painter.galley(pos, piece.galley.clone(), bg_base);
-                }
-                let progress = if look.join_words {
-                    crate::lyrics::span_progress(start, cluster_end, position_ms)
+                let width = piece.galley.size().x;
+                let piece_progress = if merged {
+                    cluster_progress
                 } else {
                     crate::lyrics::span_progress(piece.at_ms, piece.end_ms, position_ms)
                 };
-                if progress <= 0.0 {
-                    continue;
+                let (filled, edge, offset) = if merged {
+                    (cluster_filled, cluster_edge, piece.pos.x - cluster_left)
+                } else {
+                    let (_, end) = fill_edge(piece_progress, look.fade_width);
+                    (width * end, width * look.fade_width, 0.0)
+                };
+                let local_filled = piece_filled(filled, offset, width);
+                let (piece_scale, piece_lift, piece_shift) = piece_emphasis(
+                    piece_index,
+                    cluster.pieces.len(),
+                    cluster_progress,
+                    (cluster_end - start) as f32,
+                    bg_size,
+                    look.bounce * 0.65 * look.word_motion_boost,
+                );
+                let piece_transform = (piece_scale - 1.0).abs() > 0.001
+                    || piece_lift.abs() > 0.01
+                    || piece_shift.abs() > 0.01;
+                let piece_transform = piece_transform.then(|| {
+                    let piece_pivot = pos + vec2(width * 0.5, piece.galley.size().y * 0.5);
+                    egui::emath::TSTransform::new(
+                        piece_pivot.to_vec2() * (1.0 - piece_scale) + vec2(piece_shift, piece_lift),
+                        piece_scale,
+                    )
+                });
+                let transform = combine_transform(cluster_transform, piece_transform);
+                if piece.glow && bg_glow.a() > 0 && local_filled > 0.0 {
+                    let glow = with_alpha(bg_glow, glow_level(piece_progress) * fill_strength);
+                    if glow.a() > 0 {
+                        let radius =
+                            (bg_size * 0.10).clamp(1.6, 4.0) * (0.6 + 0.4 * look.glow_strength);
+                        let mut glow_clip = Rect::from_min_max(
+                            pos,
+                            pos2(pos.x + width, pos.y + piece.galley.size().y),
+                        );
+                        if let Some(transform) = transform {
+                            glow_clip = Rect::from_min_max(
+                                transform.mul_pos(glow_clip.min),
+                                transform.mul_pos(glow_clip.max),
+                            );
+                        }
+                        let glow_clip = glow_clip
+                            .expand2(vec2(radius + 1.0, radius + 1.0))
+                            .intersect(bounds);
+                        let clipped_glow = painter.with_clip_rect(glow_clip);
+                        if transform.is_some() {
+                            paint_lifted_glow(
+                                &clipped_glow,
+                                pos,
+                                &piece.galley,
+                                glow,
+                                transform,
+                                radius,
+                                look.glow_dense,
+                            );
+                        } else {
+                            paint_glow(
+                                &clipped_glow,
+                                pos,
+                                &piece.galley,
+                                glow,
+                                radius,
+                                look.glow_dense,
+                            );
+                        }
+                    }
                 }
-                if piece.glow && bg_glow.a() > 0 {
-                    let radius =
-                        (bg_size * 0.08).clamp(1.2, 2.6) * (0.6 + 0.4 * look.glow_strength);
-                    let mut glow_clip = Rect::from_min_max(
-                        pos,
-                        pos2(
-                            pos.x + piece.galley.size().x * progress,
-                            pos.y + piece.galley.size().y,
-                        ),
-                    );
-                    if let Some(transform) = transform {
-                        glow_clip = Rect::from_min_max(
-                            transform.mul_pos(glow_clip.min),
-                            transform.mul_pos(glow_clip.max),
-                        );
-                    }
-                    let glow_clip = glow_clip
-                        .expand2(vec2(radius + 1.0, radius + 1.0))
-                        .intersect(bounds);
-                    let clipped_glow = painter.with_clip_rect(glow_clip);
-                    if lifted {
-                        paint_lifted_glow(
-                            &clipped_glow,
-                            pos,
-                            &piece.galley,
-                            bg_glow,
-                            pivot,
-                            scale,
-                            lift,
-                            radius,
-                            look.glow_dense,
-                        );
-                    } else {
-                        paint_glow(
-                            &clipped_glow,
-                            pos,
-                            &piece.galley,
-                            bg_glow,
-                            radius,
-                            look.glow_dense,
-                        );
-                    }
+                if transform.is_some() {
+                    paint_lifted(painter, pos, piece.galley.clone(), bg_base, transform);
+                } else {
+                    painter.galley_with_override_text_color(pos, piece.galley.clone(), bg_base);
+                }
+                if !piece.bright || fill_strength <= 0.01 || local_filled <= 0.0 {
+                    continue;
                 }
                 paint_word_fill(
                     painter,
                     pos,
                     &piece.galley,
                     bg_fill,
-                    progress,
-                    look.fade_width,
+                    filled,
+                    offset,
+                    edge,
                     bounds,
                     transform,
                 );
@@ -1045,6 +1340,12 @@ fn paint_plain_line(
     response
 }
 
+/// The resting radius of one interlude dot. The reference draws a bullet at
+/// 1.3 times the lyric size, which is much larger than a punctuation dot.
+fn interlude_dot_radius(size: f32) -> f32 {
+    (size * 0.16).clamp(4.0, 10.0)
+}
+
 /// The three dots a musical interlude shows. Each dot swells and lifts in
 /// turn while the break progresses, matching Spicy Lyrics.
 #[allow(clippy::too_many_arguments)]
@@ -1066,42 +1367,66 @@ fn paint_interlude(
         return response;
     }
     let painter = ui.painter();
-    let base_radius = (size * 0.075).clamp(2.0, 3.6);
-    let gap = base_radius * 4.4;
+    let base_radius = interlude_dot_radius(size);
+    let gap = base_radius * 3.2;
     let time = ui.input(|input| input.time) as f32;
     let dot_times =
         (end_ms > start_ms).then(|| crate::lyrics::interlude_dot_times(start_ms, end_ms));
+    let duration = end_ms.saturating_sub(start_ms) as f32;
+    let elapsed = position_ms.saturating_sub(start_ms) as f32;
+    // The reference lets a long break breathe as one group, with a slow
+    // 4.2-second wave rather than a per-dot wobble.
+    let group_scale = if active && duration >= 2_600.0 {
+        let room = duration - 500.0;
+        let cycles = (room / 4_200.0 + 0.5).floor().max(1.0);
+        let phase = (elapsed / (room / cycles)).clamp(0.0, cycles);
+        1.0 + 0.04 * (0.5 - 0.5 * (std::f32::consts::TAU * phase).cos())
+    } else {
+        1.0
+    };
 
     for index in 0..3 {
-        let x = rect.center().x + (index as f32 - 1.0) * gap;
+        let x = rect.center().x + (index as f32 - 1.0) * gap * group_scale;
+        let enter = smoothstep01((elapsed - index as f32 * 120.0) / 900.0);
         let (dot_scale, dot_lift, dot_alpha, dot_glowing) = if let Some(times) = dot_times {
             let (d_start, d_end) = times[index];
-            if !active {
-                (1.0, 0.0, 0.35, false)
-            } else if position_ms < d_start {
+            if !active || position_ms < d_start {
                 (0.85, 0.0, 0.35, false)
-            } else if position_ms < d_end {
-                let p = crate::lyrics::span_progress(d_start, d_end, position_ms);
-                let pulse = (p * std::f32::consts::PI).sin();
-                (0.85 + 0.35 * pulse, -size * 0.14 * pulse, 1.0, true)
             } else {
-                (1.0, 0.0, 1.0, true)
+                let p = if position_ms < d_end {
+                    crate::lyrics::span_progress(d_start, d_end, position_ms)
+                } else {
+                    1.0
+                };
+                let fill = 0.5 - 0.5 * (std::f32::consts::PI * p).cos();
+                let scale = if p < 0.6 {
+                    0.94 + 0.08 * smoothstep01(p / 0.6)
+                } else {
+                    1.02 - 0.02 * smoothstep01((p - 0.6) / 0.4)
+                };
+                let lift = if p < 0.7 {
+                    -size * 0.035 * smoothstep01(p / 0.7)
+                } else {
+                    -size * 0.035 * (1.0 - smoothstep01((p - 0.7) / 0.3))
+                };
+                let alpha = (0.30 + 0.62 * fill) * enter;
+                (scale, lift, alpha, true)
             }
         } else {
             let lift = if active && playing {
-                (time * 4.6 + index as f32 * 1.1).sin().max(0.0) * size * 0.09
+                (time * 3.6 + index as f32 * 1.1).sin().max(0.0) * size * 0.04
             } else {
                 0.0
             };
             (1.0, -lift, if active { 1.0 } else { 0.35 }, active)
         };
 
-        let radius = base_radius * dot_scale;
-        let center = pos2(x, rect.center().y + dot_lift);
+        let radius = base_radius * dot_scale * group_scale;
+        let center = pos2(x, rect.center().y + dot_lift * group_scale);
         if active && dot_glowing && glow.a() > 0 {
-            for ring in 1..=4 {
-                let spread = radius * (1.0 + ring as f32 * 0.7);
-                painter.circle_filled(center, spread, glow.gamma_multiply(0.20 / ring as f32));
+            for ring in 1..=2 {
+                let spread = radius * (1.0 + ring as f32 * 0.5);
+                painter.circle_filled(center, spread, glow.gamma_multiply(0.10 / ring as f32));
             }
         }
         painter.circle_filled(center, radius, color.gamma_multiply(dot_alpha));
@@ -1177,15 +1502,51 @@ fn paint_ambient(ui: &egui::Ui, rect: Rect, colors: &[Color32], alpha: u8, anima
 }
 
 /// The credits required beside the words, at the end of the scroll.
+#[allow(clippy::too_many_arguments)]
 fn attribution(
     ui: &mut egui::Ui,
     lyrics: &Lyrics,
     palette: &theme::Palette,
     locale: crate::i18n::Locale,
+    position_ms: u32,
+    refined: bool,
+    follow_last_line: bool,
 ) {
     let Some(attribution) = &lyrics.attribution else {
         return;
     };
+    // A song that ends on a duet line sung from the right has its credits
+    // there too, stepped in by the same amount as the line.
+    let indent = if follow_last_line
+        && lyrics
+            .lines
+            .last()
+            .is_some_and(|line| line.opposite_aligned && !crate::bidi::is_rtl(&line.text))
+    {
+        (ui.available_width() * 0.07).min(56.0)
+    } else {
+        0.0
+    };
+    if refined {
+        // Quiet type close under the last line, dim until the song has been
+        // sung through.
+        let last_end = lyrics
+            .lines
+            .iter()
+            .filter_map(|line| line.end_ms.or(line.at_ms))
+            .max()
+            .unwrap_or(0);
+        let fade = if position_ms >= last_end { 1.0 } else { 0.5 };
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            ui.add_space(indent);
+            ui.vertical(|ui| {
+                attribution_text(ui, attribution, lyrics, palette, locale, fade, false);
+            });
+        });
+        ui.add_space(14.0);
+        return;
+    }
     ui.add_space(24.0);
     let (fill, stroke) = if palette.dark {
         (Color32::from_white_alpha(8), Color32::from_white_alpha(18))
@@ -1196,70 +1557,92 @@ fn attribution(
         .fill(fill)
         .stroke(egui::Stroke::new(1.0, stroke))
         .corner_radius(12)
-        .inner_margin(Margin::symmetric(14, 12))
+        .inner_margin(Margin {
+            left: 14 + indent as i8,
+            right: 14,
+            top: 12,
+            bottom: 12,
+        })
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            theme::text(
-                ui,
-                crate::lyrics::attribution_title(attribution, locale),
-                theme::semibold(12.0),
-                palette.text.gamma_multiply(0.9),
-            );
-            if attribution.source.is_empty() {
-                ui.add_space(3.0);
-                theme::text(
-                    ui,
-                    gettext(locale, "Source unknown"),
-                    theme::regular(11.0),
-                    palette.dim,
-                );
-            }
-            if attribution.source == "spicy_lyrics" {
-                for (verb, credit) in [
-                    (
-                        gettext(locale, "Uploaded by"),
-                        attribution.uploader.as_ref(),
-                    ),
-                    (gettext(locale, "Made by"), attribution.maker.as_ref()),
-                ] {
-                    let Some(credit) = credit else {
-                        continue;
-                    };
-                    ui.add_space(4.0);
-                    ui.horizontal_wrapped(|ui| {
-                        ui.spacing_mut().item_spacing.x = 4.0;
-                        theme::text(ui, verb, theme::regular(11.0), palette.dim);
-                        let label = egui::RichText::new(&credit.name)
-                            .font(theme::semibold(11.0))
-                            .color(palette.accent);
-                        let response = ui.add(egui::Label::new(label).sense(Sense::click()));
-                        if response.hovered() {
-                            ui.ctx().set_cursor_icon(if credit.url.is_some() {
-                                egui::CursorIcon::PointingHand
-                            } else {
-                                egui::CursorIcon::Default
-                            });
-                        }
-                        if response.clicked()
-                            && let Some(url) = &credit.url
-                        {
-                            ui.ctx().open_url(egui::OpenUrl::new_tab(url));
-                        }
-                    });
-                }
-            }
-            if !lyrics.song_writers.is_empty() {
-                ui.add_space(5.0);
-                theme::text(
-                    ui,
-                    gettext(locale, "Written by {names}")
-                        .replace("{names}", &lyrics.song_writers.join(", ")),
-                    theme::regular(11.0),
-                    palette.dim,
-                );
-            }
+            attribution_text(ui, attribution, lyrics, palette, locale, 1.0, true);
         });
     ui.add_space(14.0);
+}
+
+/// The provider, the people and the writers, shared by the card and the
+/// refined row. `fade` dims the whole block while the song is still playing.
+fn attribution_text(
+    ui: &mut egui::Ui,
+    attribution: &crate::lyrics::Attribution,
+    lyrics: &Lyrics,
+    palette: &theme::Palette,
+    locale: crate::i18n::Locale,
+    fade: f32,
+    card: bool,
+) {
+    theme::text(
+        ui,
+        crate::lyrics::attribution_title(attribution, locale),
+        theme::semibold(if card { 12.0 } else { 11.0 }),
+        palette.text.gamma_multiply(0.9 * fade),
+    );
+    if attribution.source.is_empty() {
+        ui.add_space(3.0);
+        theme::text(
+            ui,
+            gettext(locale, "Source unknown"),
+            theme::regular(11.0),
+            palette.dim.gamma_multiply(fade),
+        );
+    }
+    for (verb, credit) in [
+        (
+            gettext(locale, "Uploaded by"),
+            attribution.uploader.as_ref(),
+        ),
+        (gettext(locale, "Made by"), attribution.maker.as_ref()),
+    ] {
+        let Some(credit) = credit else {
+            continue;
+        };
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            theme::text(
+                ui,
+                verb,
+                theme::regular(11.0),
+                palette.dim.gamma_multiply(fade),
+            );
+            let label = egui::RichText::new(&credit.name)
+                .font(theme::semibold(11.0))
+                .color(palette.accent.gamma_multiply(fade));
+            let response = ui.add(egui::Label::new(label).sense(Sense::click()));
+            if response.hovered() {
+                ui.ctx().set_cursor_icon(if credit.url.is_some() {
+                    egui::CursorIcon::PointingHand
+                } else {
+                    egui::CursorIcon::Default
+                });
+            }
+            if response.clicked()
+                && let Some(url) = &credit.url
+            {
+                ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+            }
+        });
+    }
+    if !lyrics.song_writers.is_empty() {
+        ui.add_space(5.0);
+        theme::text(
+            ui,
+            gettext(locale, "Written by {names}")
+                .replace("{names}", &lyrics.song_writers.join(", ")),
+            theme::regular(11.0),
+            palette.dim.gamma_multiply(fade),
+        );
+    }
 }
 
 /// The player keeps the karaoke fill moving, but only while the panel is on
@@ -1348,7 +1731,12 @@ pub fn side_panel(app: &mut App, ui: &mut egui::Ui) {
         .frame(
             Frame::new()
                 .fill(Color32::from_rgb(18, 18, 20))
-                .inner_margin(Margin::symmetric(14, 12)),
+                .inner_margin(Margin {
+                    left: 22,
+                    right: 14,
+                    top: 12,
+                    bottom: 12,
+                }),
         );
     let response = panel.show(ui, |ui| {
         theme::apply_local(ui, &palette);
@@ -1433,8 +1821,9 @@ pub fn side_panel(app: &mut App, ui: &mut egui::Ui) {
             }
         });
         ui.add_space(10.0);
-        now_playing_stage(app, ui);
-        if app.now_playing().is_none() || !app.lyrics_card_collapsed {
+        if app.now_playing().is_some() {
+            now_playing_stage(app, ui);
+        } else {
             ui.add_space(8.0);
             contents(app, ui);
         }
@@ -1747,13 +2136,25 @@ fn lyrics_settings_popup(
                         app.settings.lyrics_line_fade_ms = value as u32;
                         changed = true;
                     }
-                    changed |= lyrics_popup_switch(
+                    let mut merged = app.settings.lyrics_syllable_merge != SyllableMerge::Off;
+                    if lyrics_popup_switch(
                         ui,
                         palette,
-                        &gettext(locale, "Join split words"),
-                        "join_words",
-                        &mut app.settings.lyrics_join_words,
-                    );
+                        &gettext(locale, "Merge syllables"),
+                        "merge_syllables",
+                        &mut merged,
+                    ) {
+                        app.settings.lyrics_syllable_merge = if merged {
+                            if app.settings.lyrics_syllable_merge == SyllableMerge::Off {
+                                SyllableMerge::Full
+                            } else {
+                                app.settings.lyrics_syllable_merge
+                            }
+                        } else {
+                            SyllableMerge::Off
+                        };
+                        changed = true;
+                    }
                     changed |= lyrics_popup_switch(
                         ui,
                         palette,
@@ -1885,8 +2286,63 @@ fn lyrics_settings_popup(
         });
 }
 
-/// The playback context, cover stage with bottom gradient fade, track metadata with
-/// save action, and collapsible lyrics card header.
+/// Up to two lyric lines to show under the collapsed Now Playing card: the
+/// line being sung, then the one after it.
+fn lyrics_preview(app: &App) -> Vec<String> {
+    let Some(now) = app.now_playing() else {
+        return Vec::new();
+    };
+    let Loadable::Loaded(Some(lyrics)) = &app.lyrics else {
+        return Vec::new();
+    };
+    let position_ms = (now.position_ms as i64 + app.settings.lyrics_offset_ms as i64).max(0) as u32;
+    let active_at = position_ms.saturating_add(app.settings.lyrics_early_scroll_ms);
+    let active = lyrics.active_line_with_hold(active_at, app.settings.lyrics_line_hold_ms);
+    let start = active.unwrap_or_else(|| {
+        lyrics
+            .lines
+            .iter()
+            .position(|line| line.at_ms.is_some_and(|at| at >= position_ms))
+            .unwrap_or(0)
+    });
+    let mut preview = Vec::new();
+    for line in lyrics.lines.iter().skip(start) {
+        let text = line_preview_text(line);
+        if text.is_empty() {
+            continue;
+        }
+        preview.push(text);
+        if preview.len() == 2 {
+            break;
+        }
+    }
+    preview
+}
+
+/// The words a line shows in a preview, including a backing-vocal-only line.
+fn line_preview_text(line: &Line) -> String {
+    let text = line.text.trim();
+    if !text.is_empty() {
+        return text.to_owned();
+    }
+    let mut joined = String::new();
+    let mut joins_next = false;
+    for syllable in &line.background {
+        let part = syllable.text.trim();
+        if part.is_empty() {
+            continue;
+        }
+        if !joined.is_empty() && !joins_next {
+            joined.push(' ');
+        }
+        joined.push_str(part);
+        joins_next = syllable.part_of_word;
+    }
+    joined
+}
+
+/// The playback context, the cover stage, the track metadata with its save
+/// action, and the collapsible lyrics card.
 fn now_playing_stage(app: &mut App, ui: &mut egui::Ui) {
     let palette = theme::Palette::dark();
     let Some(now) = app.now_playing() else {
@@ -1900,56 +2356,42 @@ fn now_playing_stage(app: &mut App, ui: &mut egui::Ui) {
     };
     let mut toggle_save = false;
 
-    if app.lyrics_card_collapsed {
-        if let Some(from) = app.playing_from() {
-            let label = gettext(app.locale, "Playing from").to_uppercase();
-            ui.horizontal(|ui| {
-                theme::text(ui, label, theme::semibold(10.5), palette.secondary);
-                match from.page {
-                    Some(page) => {
-                        if theme::link(ui, from.name, theme::semibold(11.0), palette.text).clicked()
-                        {
-                            app.actions.push(Action::Open(page));
-                        }
-                    }
-                    None => {
-                        theme::text(ui, from.name, theme::semibold(11.0), palette.text);
+    if let Some(from) = app.playing_from() {
+        let label = gettext(app.locale, "Playing from").to_uppercase();
+        ui.horizontal(|ui| {
+            theme::text(ui, label, theme::semibold(10.5), palette.secondary);
+            match from.page {
+                Some(page) => {
+                    if theme::link(ui, from.name, theme::semibold(11.0), palette.text).clicked() {
+                        app.actions.push(Action::Open(page));
                     }
                 }
-            });
-            ui.add_space(8.0);
-        }
-
-        let width = ui.available_width().max(60.0);
-        let stage_height = width.min((ui.available_height() - 140.0).max(120.0));
-        let (stage_rect, _) = ui.allocate_exact_size(vec2(width, stage_height), Sense::hover());
-        let radius = theme::RADIUS as f32;
-        widgets::playing_cover(
-            ui,
-            &palette,
-            app.backend.art(),
-            "lyrics-stage-cover",
-            app.small_art(&now, width),
-            stage_rect,
-            radius,
-        );
-        ui.painter()
-            .rect_filled(stage_rect, radius, Color32::from_black_alpha(51));
-        let fade_top = stage_rect.top() + stage_rect.height() * 0.55;
-        let fade_rect =
-            Rect::from_min_max(pos2(stage_rect.left(), fade_top), stage_rect.right_bottom());
-        widgets::paint_vertical_gradient(
-            ui,
-            fade_rect,
-            Color32::TRANSPARENT,
-            Color32::from_black_alpha(230),
-        );
-
+                None => {
+                    theme::text(ui, from.name, theme::semibold(11.0), palette.text);
+                }
+            }
+        });
         ui.add_space(8.0);
+    }
 
-        egui::Sides::new().shrink_left().spacing(8.0).show(
-            ui,
-            |ui| {
+    // The side panel is for words, not an art viewer: a compact row keeps
+    // the lyrics high and leaves the blurred backdrop as the stage.
+    egui::Sides::new().shrink_left().spacing(8.0).show(
+        ui,
+        |ui| {
+            ui.horizontal(|ui| {
+                let size = 56.0;
+                let (rect, _) = ui.allocate_exact_size(vec2(size, size), Sense::hover());
+                widgets::playing_cover(
+                    ui,
+                    &palette,
+                    app.backend.art(),
+                    "lyrics-now-playing",
+                    app.small_art(&now, size),
+                    rect,
+                    theme::RADIUS as f32,
+                );
+                ui.add_space(6.0);
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
                     ui.add(
@@ -1969,130 +2411,130 @@ fn now_playing_stage(app: &mut App, ui: &mut egui::Ui) {
                         .truncate(),
                     );
                 });
-            },
-            |ui| {
-                if !now.is_episode {
-                    let (icon, color) = if saved {
-                        (Icon::HeartFilled, palette.accent)
-                    } else {
-                        (Icon::Heart, palette.secondary)
-                    };
-                    if theme::icon_button(ui, icon, 18.0, color, palette.text, &save_tooltip)
-                        .clicked()
-                    {
-                        toggle_save = true;
-                    }
+            });
+        },
+        |ui| {
+            if !now.is_episode {
+                let (icon, color) = if saved {
+                    (Icon::HeartFilled, palette.accent)
+                } else {
+                    (Icon::Heart, palette.secondary)
+                };
+                if theme::icon_button(ui, icon, 18.0, color, palette.text, &save_tooltip).clicked()
+                {
+                    toggle_save = true;
                 }
-            },
-        );
-
-        ui.add_space(10.0);
-    } else {
-        egui::Sides::new().shrink_left().spacing(8.0).show(
-            ui,
-            |ui| {
-                ui.horizontal(|ui| {
-                    let size = 56.0;
-                    let (rect, _) = ui.allocate_exact_size(vec2(size, size), Sense::hover());
-                    widgets::playing_cover(
-                        ui,
-                        &palette,
-                        app.backend.art(),
-                        "lyrics-now-playing",
-                        app.small_art(&now, size),
-                        rect,
-                        theme::RADIUS as f32,
-                    );
-                    ui.add_space(6.0);
-                    ui.vertical(|ui| {
-                        ui.spacing_mut().item_spacing.y = 2.0;
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(&now.title)
-                                    .font(theme::semibold(15.0))
-                                    .color(palette.text),
-                            )
-                            .truncate(),
-                        );
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(&now.subtitle)
-                                    .font(theme::regular(12.0))
-                                    .color(palette.secondary),
-                            )
-                            .truncate(),
-                        );
-                    });
-                });
-            },
-            |ui| {
-                if !now.is_episode {
-                    let (icon, color) = if saved {
-                        (Icon::HeartFilled, palette.accent)
-                    } else {
-                        (Icon::Heart, palette.secondary)
-                    };
-                    if theme::icon_button(ui, icon, 18.0, color, palette.text, &save_tooltip)
-                        .clicked()
-                    {
-                        toggle_save = true;
-                    }
-                }
-            },
-        );
-
-        ui.add_space(6.0);
-    }
+            }
+        },
+    );
+    ui.add_space(6.0);
 
     if toggle_save {
         app.actions.push(Action::ToggleSaved(now.uri));
     }
 
-    let card_header_height = 26.0;
-    let (card_rect, response) = ui.allocate_exact_size(
-        vec2(ui.available_width().max(1.0), card_header_height),
-        Sense::click(),
-    );
-    let card_hovered = response.hovered();
-    let header_bg = if card_hovered {
-        Color32::from_white_alpha(20)
+    let preview = lyrics_preview(app);
+    let locale = app.locale;
+    let collapsed = app.lyrics_card_collapsed;
+
+    // One stable, full-width click target. It does not move when the card
+    // opens or closes, so a click can never land on a shrinking preview.
+    let (header_rect, header_response) =
+        ui.allocate_exact_size(vec2(ui.available_width().max(1.0), 26.0), Sense::click());
+    if header_response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        ui.painter().rect_filled(
+            header_rect,
+            CornerRadius::same(8),
+            Color32::from_white_alpha(6),
+        );
+    }
+    let chevron = if collapsed {
+        Icon::ChevronDown
     } else {
-        Color32::from_white_alpha(10)
+        Icon::ChevronUp
     };
-    ui.painter()
-        .rect_filled(card_rect, CornerRadius::same(6), header_bg);
-    let header_ui_rect = card_rect.shrink2(vec2(8.0, 0.0));
-    ui.scope_builder(
-        UiBuilder::new()
-            .max_rect(header_ui_rect)
-            .layout(Layout::left_to_right(Align::Center)),
-        |ui| {
-            let chevron = if app.lyrics_card_collapsed {
-                Icon::ChevronDown
-            } else {
-                Icon::ChevronUp
-            };
-            theme::paint_icon(
-                ui,
-                chevron,
-                Rect::from_center_size(
-                    pos2(header_ui_rect.left() + 8.0, header_ui_rect.center().y),
-                    vec2(14.0, 14.0),
-                ),
-                14.0,
-                palette.secondary,
-            );
-            ui.add_space(20.0);
-            theme::text(
-                ui,
-                gettext(app.locale, "Lyrics"),
-                theme::semibold(13.0),
-                palette.text,
-            );
-        },
+    theme::paint_icon(
+        ui,
+        chevron,
+        Rect::from_center_size(
+            pos2(header_rect.left() + 12.0, header_rect.center().y),
+            vec2(14.0, 14.0),
+        ),
+        14.0,
+        palette.secondary,
     );
-    if response.clicked() {
+    let mut header_ui = ui.new_child(
+        UiBuilder::new()
+            .max_rect(header_rect)
+            .layout(Layout::left_to_right(Align::Center)),
+    );
+    header_ui.add_space(24.0);
+    theme::text(
+        &mut header_ui,
+        gettext(locale, "Lyrics"),
+        theme::semibold(13.0),
+        palette.text,
+    );
+    if header_response.clicked() {
         app.actions.push(Action::ToggleLyricsCard);
+    }
+
+    if collapsed {
+        if !preview.is_empty() {
+            let lines = preview.len().min(2);
+            let preview_rect = Rect::from_min_size(
+                pos2(ui.cursor().min.x, ui.cursor().min.y + 1.0),
+                vec2(ui.available_width().max(1.0), lines as f32 * 20.0 + 2.0),
+            );
+            ui.allocate_exact_size(preview_rect.size(), Sense::hover());
+            let mut preview_ui = ui.new_child(UiBuilder::new().max_rect(preview_rect));
+            preview_ui.set_clip_rect(preview_rect);
+            preview_ui.spacing_mut().item_spacing.y = 1.0;
+            for (index, line) in preview.iter().take(2).enumerate() {
+                let color = if index == 0 {
+                    palette.text.gamma_multiply(0.82)
+                } else {
+                    palette.secondary.gamma_multiply(0.72)
+                };
+                preview_ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(line)
+                            .font(theme::regular(13.0))
+                            .color(color),
+                    )
+                    .truncate(),
+                );
+            }
+            let response = ui.interact(
+                preview_rect,
+                egui::Id::new("lyrics-card-preview"),
+                Sense::click(),
+            );
+            if response.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            if response.clicked() {
+                app.actions.push(Action::ToggleLyricsCard);
+            }
+        }
+        if app.now_playing().is_some_and(|now| now.playing) {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(200));
+        }
+        return;
+    }
+
+    // The body owns every point left in the panel, so its scroll area has a
+    // real, stable viewport. No height animation: the collapsed card is a
+    // different layout, not a clipped half-open one.
+    ui.add_space(6.0);
+    let body_rect = ui.available_rect_before_wrap();
+    if body_rect.height() > 1.0 {
+        let mut body = ui.new_child(UiBuilder::new().max_rect(body_rect));
+        body.set_clip_rect(body_rect);
+        contents(app, &mut body);
+        ui.advance_cursor_after_rect(body_rect);
     }
 }
 
@@ -2183,7 +2625,6 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
     let position_ms = (now.position_ms as i64 + app.settings.lyrics_offset_ms as i64).max(0) as u32;
     let active_at = position_ms.saturating_add(app.settings.lyrics_early_scroll_ms);
     let active = lyrics.active_line_with_hold(active_at, app.settings.lyrics_line_hold_ms);
-    let follow = app.lyrics_following && app.lyrics_line_shown != Some(active);
     let motion = MotionLook::from_settings(&app.settings, 22);
     let animation = if app.settings.lyrics_smooth_scroll {
         crate::motion::scroll(ui.ctx(), app.settings.lyrics_scroll_ms as f32 / 1000.0)
@@ -2198,9 +2639,28 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
     } else {
         Color32::WHITE
     };
+    let active_alpha = if app.settings.lyrics_style == LyricsStyle::AppleMusic
+        || app.settings.lyrics_simple_mode
+    {
+        1.0
+    } else {
+        0.85
+    };
+    let word_fill = with_alpha(active_color, active_alpha);
     let base_quiet = palette.text.gamma_multiply(0.35);
     let base_sung = palette.text.gamma_multiply(0.48);
-    let base_active = palette.text.gamma_multiply(0.40);
+    let base_active = palette.text.gamma_multiply(0.55);
+    // Read the wheel before the scroll area consumes it: a hand scroll means
+    // the reader wants to look elsewhere, so this frame must not snap back
+    // to the sung line. The Follow button in the header picks the song up.
+    let viewport = ui.available_rect_before_wrap();
+    let manual_scroll = ui.rect_contains_pointer(viewport)
+        && ui.input(|input| {
+            input.smooth_scroll_delta.y != 0.0
+                || (input.pointer.primary_down() && input.pointer.delta().y != 0.0)
+        });
+    let following = app.lyrics_following && !manual_scroll;
+    let follow = following && app.lyrics_line_shown != Some(active);
     ui.spacing_mut().scroll.fade.strength = 0.0;
     ui.spacing_mut().scroll.fade.size = 0.0;
     let scroll = crate::autoscroll::show(
@@ -2243,7 +2703,18 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
                 let quiet = base_quiet.gamma_multiply(dim);
                 let sung = base_sung.gamma_multiply(dim);
                 let active_base = base_active.gamma_multiply(focus);
-                let color = blend(quiet, active_color, lit_eased);
+                let resting = if line.at_ms.is_some_and(|at| at < position_ms) {
+                    sung
+                } else {
+                    quiet
+                };
+                let base = if is_active {
+                    active_base
+                } else {
+                    blend(resting, active_base, lit_eased)
+                };
+                let color = blend(resting, active_color, lit_eased);
+                let fill_strength = if is_active { 1.0 } else { lit_eased };
                 let rise = if motion.rise && is_active {
                     (1.0 - lit_eased) * line_size * 0.12
                 } else {
@@ -2255,14 +2726,8 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
                     } else {
                         theme::lyrics_quiet(line_size)
                     },
-                    if is_active {
-                        active_base
-                    } else if line.at_ms.is_some_and(|at| at < position_ms) {
-                        sung
-                    } else {
-                        quiet
-                    },
-                    active_color,
+                    base,
+                    word_fill,
                     wrap,
                     rise,
                 );
@@ -2292,7 +2757,16 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
                             position_ms,
                         )
                     } else if word_line(line) {
-                        paint_word_line(ui, line, position_ms, is_active, &look, index).0
+                        paint_word_line(
+                            ui,
+                            line,
+                            position_ms,
+                            is_active,
+                            fill_strength,
+                            &look,
+                            index,
+                        )
+                        .0
                     } else {
                         let sense = if lyrics.synced {
                             Sense::click()
@@ -2312,20 +2786,29 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
                     && response.clicked()
                     && let Some(at_ms) = line.at_ms
                 {
-                    app.actions.push(Action::Seek(at_ms));
+                    let at = seek_target(at_ms, app.settings.lyrics_seek_fade_compensation);
+                    app.actions.push(Action::Seek(at));
                     app.lyrics_following = true;
                 }
-                if is_active && app.lyrics_following {
+                if is_active && following {
                     show_sung_line(ui, rect, SUNG_LINE_AT, Some(animation));
                 }
                 ui.add_space(line_gap);
             }
             if app.settings.lyrics_show_credits {
-                attribution(ui, &lyrics, &palette, app.locale);
+                attribution(
+                    ui,
+                    &lyrics,
+                    &palette,
+                    app.locale,
+                    position_ms,
+                    app.settings.lyrics_refined_credits,
+                    app.settings.lyrics_credits_follow_last_line,
+                );
             }
             // Words without timing can only be followed by the clock: sit
             // at the part of the text the song is probably at.
-            if app.lyrics_following && !lyrics.synced && now.duration_ms > 0 {
+            if following && !lyrics.synced && now.duration_ms > 0 {
                 let fraction =
                     (f64::from(position_ms) / f64::from(now.duration_ms)).clamp(0.0, 1.0);
                 let content = ui.min_rect();
@@ -2344,11 +2827,7 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
         },
     );
     crate::autoscroll::lyrics(ui, scroll.id);
-    // Scrolling by hand means the reader wants to look elsewhere; the
-    // Follow button in the header picks the song back up.
-    if ui.rect_contains_pointer(scroll.inner_rect)
-        && ui.input(|input| input.smooth_scroll_delta.y != 0.0)
-    {
+    if manual_scroll {
         app.lyrics_following = false;
     }
     request_word_repaint(ui.ctx(), &now, &lyrics, app.settings.lyrics_low_performance);
@@ -2965,6 +3444,14 @@ fn fullscreen_contents(app: &mut App, ui: &mut egui::Ui) {
     } else {
         Color32::WHITE
     };
+    let active_alpha = if app.settings.lyrics_style == LyricsStyle::AppleMusic
+        || app.settings.lyrics_simple_mode
+    {
+        1.0
+    } else {
+        0.85
+    };
+    let word_fill = with_alpha(active_color, active_alpha);
     let base_quiet = palette
         .text
         .gamma_multiply(if app.milkdrop_behind_lyrics() {
@@ -2982,9 +3469,9 @@ fn fullscreen_contents(app: &mut App, ui: &mut egui::Ui) {
     let base_active = palette
         .text
         .gamma_multiply(if app.milkdrop_behind_lyrics() {
-            0.60
+            0.66
         } else {
-            0.40
+            0.55
         });
     ui.spacing_mut().scroll.fade.strength = 0.0;
     ui.spacing_mut().scroll.fade.size = 0.0;
@@ -3022,9 +3509,20 @@ fn fullscreen_contents(app: &mut App, ui: &mut egui::Ui) {
                 );
                 let lit_eased = lit * lit * (3.0 - 2.0 * lit);
                 let passed = active.is_some_and(|active_idx| index < active_idx);
+                // A line that ends while one above it is still being sung
+                // stays on screen, dimmed, rather than disappearing early.
+                let overlapping = passed
+                    && app.settings.lyrics_keep_overlapping_lines
+                    && active
+                        .and_then(|active_idx| lyrics.lines.get(active_idx))
+                        .is_some_and(|current| {
+                            line.end_ms
+                                .zip(current.at_ms)
+                                .is_some_and(|(end, active_at)| end > active_at)
+                        });
                 // A minimal view lets a passed line fade right out, then
                 // stops giving it room, so only the song ahead is left.
-                if hide_passed && passed && lit < 0.02 {
+                if hide_passed && passed && !overlapping && lit < 0.02 {
                     continue;
                 }
                 let distance = active.map_or(0, |active_idx| index.abs_diff(active_idx));
@@ -3037,11 +3535,22 @@ fn fullscreen_contents(app: &mut App, ui: &mut egui::Ui) {
                 let quiet = base_quiet.gamma_multiply(dim);
                 let sung = base_sung.gamma_multiply(dim);
                 let active_base = base_active.gamma_multiply(focus);
+                let resting = if line.at_ms.is_some_and(|at| at < position_ms) {
+                    sung
+                } else {
+                    quiet
+                };
+                let base = if is_active {
+                    active_base
+                } else {
+                    blend(resting, active_base, lit_eased)
+                };
                 let color = if lyrics.synced {
-                    blend(quiet, active_color, lit_eased)
+                    blend(resting, active_color, lit_eased)
                 } else {
                     palette.text
                 };
+                let fill_strength = if is_active { 1.0 } else { lit_eased };
                 let grown = if lyrics.synced {
                     1.0 + (motion.active_growth - 1.0) * lit_eased
                 } else {
@@ -3066,14 +3575,8 @@ fn fullscreen_contents(app: &mut App, ui: &mut egui::Ui) {
                     } else {
                         theme::lyrics_quiet(base_size)
                     },
-                    if is_active {
-                        active_base
-                    } else if line.at_ms.is_some_and(|at| at < position_ms) {
-                        sung
-                    } else {
-                        quiet
-                    },
-                    active_color,
+                    base,
+                    word_fill,
                     wrap,
                     rise,
                 );
@@ -3104,7 +3607,16 @@ fn fullscreen_contents(app: &mut App, ui: &mut egui::Ui) {
                             position_ms,
                         )
                     } else if word_line(line) {
-                        paint_word_line(ui, line, position_ms, is_active, &look, index).0
+                        paint_word_line(
+                            ui,
+                            line,
+                            position_ms,
+                            is_active,
+                            fill_strength,
+                            &look,
+                            index,
+                        )
+                        .0
                     } else {
                         // Untimed words have nowhere to jump to, but a click on
                         // them is still on a line, so it must not reach the
@@ -3140,7 +3652,8 @@ fn fullscreen_contents(app: &mut App, ui: &mut egui::Ui) {
                     && response.clicked()
                     && let Some(at_ms) = line.at_ms
                 {
-                    app.actions.push(Action::Seek(at_ms));
+                    let at = seek_target(at_ms, app.settings.lyrics_seek_fade_compensation);
+                    app.actions.push(Action::Seek(at));
                     app.actions.push(Action::FollowLyrics);
                 }
                 if is_active && following {
@@ -3149,7 +3662,15 @@ fn fullscreen_contents(app: &mut App, ui: &mut egui::Ui) {
                 ui.add_space(line_gap);
             }
             if app.settings.lyrics_show_credits {
-                attribution(ui, &lyrics, &palette, app.locale);
+                attribution(
+                    ui,
+                    &lyrics,
+                    &palette,
+                    app.locale,
+                    position_ms,
+                    app.settings.lyrics_refined_credits,
+                    app.settings.lyrics_credits_follow_last_line,
+                );
             }
             // Words without timing can only be followed by the clock: sit
             // at the part of the text the song is probably at.
@@ -3193,41 +3714,88 @@ fn fullscreen_contents(app: &mut App, ui: &mut egui::Ui) {
 #[cfg(test)]
 mod tests {
     use super::{
-        align_offset, fullscreen_content_width, joined_text, joined_transliteration,
-        preferred_backdrop_art, word_bounce, word_bounce_varied,
+        WordCluster, align_offset, boosted_motion, fill_edge, fullscreen_content_width, glow_level,
+        interlude_dot_radius, joined_text, joined_transliteration, line_preview_text,
+        merges_cluster, piece_emphasis, piece_filled, preferred_backdrop_art, seek_target,
+        word_swell,
     };
-    use crate::lyrics::Syllable;
-    use crate::settings::LyricsAlign;
+    use crate::lyrics::{Line, Syllable};
+    use crate::settings::{LyricsAlign, SyllableMerge};
+    use egui::{Color32, FontId, Rect, vec2};
 
     #[test]
-    fn a_word_springs_up_and_settles() {
-        let size = 20.0;
-        let (start, low) = word_bounce(1_000, 1_000, size, 1.0);
-        assert_eq!((start, low), (1.0, 0.0), "a word starts at rest");
-        let (peak, lift) = word_bounce(1_150, 1_000, size, 1.0);
-        assert!(peak > 1.0, "a word swells while sounding, got {peak}");
-        assert!(lift < 0.0, "the swell lifts, got {lift}");
-        assert_eq!(word_bounce(5_000, 1_000, size, 1.0), (1.0, 0.0));
+    fn a_word_swell_starts_and_ends_at_rest() {
+        assert_eq!(word_swell(0.0, 20.0, 1.0), (1.0, 0.0));
+        assert_eq!(word_swell(1.0, 20.0, 1.0), (1.0, 0.0));
+        assert_eq!(word_swell(0.5, 20.0, 0.0), (1.0, 0.0));
     }
 
     #[test]
-    fn word_bounce_varied_introduces_subtle_variation_per_seed() {
-        let (scale1, lift1) = word_bounce_varied(1_150, 1_000, 20.0, 1.0, 1);
-        let (scale2, lift2) = word_bounce_varied(1_150, 1_000, 20.0, 1.0, 2);
-        assert!(scale1 > 1.0);
-        assert!(scale2 > 1.0);
-        assert_ne!((scale1, lift1), (scale2, lift2));
-        assert_eq!(word_bounce_varied(1_150, 1_000, 20.0, 0.0, 42), (1.0, 0.0));
+    fn the_word_swell_is_gentle_and_scales_with_strength() {
+        let (default, lift) = word_swell(0.5, 20.0, 1.0);
+        assert!(default > 1.0 && default < 1.04, "default peak {default}");
+        assert!(lift < 0.0 && lift > -0.4, "default lift {lift}");
+
+        let (strong, strong_lift) = word_swell(0.5, 20.0, 2.0);
+        assert!(strong > default);
+        assert!(strong_lift < lift);
     }
 
     #[test]
-    fn the_bounce_strength_scales_the_swell_and_zero_rests() {
-        let (gentle, gentle_lift) = word_bounce(1_150, 1_000, 20.0, 0.5);
-        let (strong, strong_lift) = word_bounce(1_150, 1_000, 20.0, 1.5);
-        assert!(gentle > 1.0);
-        assert!(strong > gentle);
-        assert!(strong_lift < gentle_lift);
-        assert_eq!(word_bounce(1_150, 1_000, 20.0, 0.0), (1.0, 0.0));
+    fn a_word_fills_from_left_to_right_across_its_width() {
+        let (start, end) = fill_edge(0.0, 0.2);
+        assert!(start < 0.0);
+        assert_eq!(end, 0.0);
+
+        let (start, end) = fill_edge(0.5, 0.2);
+        assert!((start - 0.4).abs() < 1e-6, "start {start}");
+        assert!((end - 0.6).abs() < 1e-6, "end {end}");
+
+        let (start, end) = fill_edge(1.0, 0.2);
+        assert!((start - 1.0).abs() < 1e-6, "start {start}");
+        assert!((end - 1.2).abs() < 1e-6, "end {end}");
+    }
+
+    #[test]
+    fn a_held_word_sends_a_swell_through_its_syllables() {
+        let (first, first_lift, first_shift) = piece_emphasis(0, 2, 0.35, 2_000.0, 23.0, 1.0);
+        let (second, second_lift, second_shift) = piece_emphasis(1, 2, 0.35, 2_000.0, 23.0, 1.0);
+        assert!(first > second, "the first syllable leads");
+        assert!(first_lift < second_lift, "and lifts more");
+        assert!(
+            first_shift < 0.0 && second_shift > 0.0,
+            "the syllables spread"
+        );
+
+        let (single, _, _) = piece_emphasis(0, 1, 0.35, 2_000.0, 23.0, 1.0);
+        assert_eq!(single, 1.0, "an unsplit word keeps the quiet swell");
+        let (short, _, _) = piece_emphasis(0, 2, 0.35, 500.0, 23.0, 1.0);
+        assert_eq!(short, 1.0, "short words do not get the letter wave");
+    }
+
+    #[test]
+    fn interlude_dots_are_large_enough_to_read() {
+        let small = interlude_dot_radius(23.0);
+        assert!(small >= 4.0, "small dot radius {small}");
+        assert!(interlude_dot_radius(40.0) > small);
+        assert_eq!(interlude_dot_radius(10.0), 4.0);
+        assert_eq!(interlude_dot_radius(100.0), 10.0);
+    }
+
+    #[test]
+    fn a_glow_builds_and_fades_across_the_word() {
+        assert_eq!(glow_level(0.0), 0.0);
+        assert_eq!(glow_level(0.3), 1.0);
+        assert!(glow_level(0.85) < 0.5);
+        assert_eq!(glow_level(1.0), 0.0);
+    }
+
+    #[test]
+    fn a_split_word_fills_each_syllable_from_its_own_left_edge() {
+        assert_eq!(piece_filled(25.0, 0.0, 50.0), 25.0);
+        assert_eq!(piece_filled(50.0, 0.0, 50.0), 50.0);
+        assert_eq!(piece_filled(10.0, 50.0, 30.0), 0.0);
+        assert_eq!(piece_filled(65.0, 50.0, 30.0), 15.0);
     }
 
     #[test]
@@ -3318,5 +3886,158 @@ mod tests {
     fn a_dark_picture_is_dimmed_less_but_never_left_alone() {
         assert!(super::backdrop_dim(0.1) > super::backdrop_dim(1.0));
         assert!(super::backdrop_dim(0.0) <= 0.32);
+    }
+
+    fn timed(text: &str, part_of_word: bool, at_ms: u32, end_ms: u32) -> Syllable {
+        Syllable {
+            text: text.into(),
+            part_of_word,
+            at_ms,
+            end_ms,
+            ..Syllable::default()
+        }
+    }
+
+    /// The word clusters the line renderer would build for `syllables`.
+    fn clusters(syllables: &[Syllable]) -> Vec<WordCluster> {
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(600.0, 200.0))),
+            ..Default::default()
+        };
+        let mut laid_out = Vec::new();
+        let mut output = ctx.run_ui(input, |ui| {
+            laid_out = super::layout_syllable_clusters(
+                ui.painter(),
+                syllables,
+                &FontId::proportional(16.0),
+                Color32::WHITE,
+                500.0,
+                0.0,
+                LyricsAlign::Left,
+                false,
+                false,
+                0.0,
+            )
+            .0;
+        });
+        output.textures_delta.clear();
+        laid_out
+    }
+
+    #[test]
+    fn merging_fills_a_whole_word_only_when_asked() {
+        let word = clusters(&[timed("He", true, 0, 450), timed("llo", false, 450, 900)]);
+        let cluster = &word[0];
+        assert!(!merges_cluster(cluster, SyllableMerge::Off));
+        assert!(merges_cluster(cluster, SyllableMerge::Full));
+        assert!(merges_cluster(cluster, SyllableMerge::Steady));
+        assert!(!merges_cluster(cluster, SyllableMerge::Held));
+
+        let with_gap = clusters(&[timed("He", true, 0, 300), timed("llo", false, 600, 900)]);
+        assert!(!merges_cluster(&with_gap[0], SyllableMerge::Steady));
+        assert!(merges_cluster(&with_gap[0], SyllableMerge::Full));
+    }
+
+    #[test]
+    fn a_merged_word_has_one_continuous_fill_front() {
+        // Two syllables of a kept-together word, 50 and 30 points wide.
+        for (filled, first, second) in [
+            (0.0, 0.0, 0.0),
+            (20.0, 20.0, 0.0),
+            (50.0, 50.0, 0.0),
+            (65.0, 50.0, 15.0),
+            (80.0, 50.0, 30.0),
+            (120.0, 50.0, 30.0),
+        ] {
+            assert_eq!(piece_filled(filled, 0.0, 50.0), first, "filled {filled}");
+            assert_eq!(piece_filled(filled, 50.0, 30.0), second, "filled {filled}");
+        }
+        // The front never restarts: the second syllable stays empty until the
+        // first is completely filled.
+        assert_eq!(piece_filled(49.0, 50.0, 30.0), 0.0);
+    }
+
+    #[test]
+    fn a_held_word_needs_time_to_be_held() {
+        let held = clusters(&[
+            timed("Ho", true, 1_000, 2_100),
+            timed("me", false, 2_100, 2_500),
+        ]);
+        assert!(merges_cluster(&held[0], SyllableMerge::Held));
+        let quick = clusters(&[
+            timed("Ho", true, 1_000, 1_600),
+            timed("me", false, 1_600, 1_900),
+        ]);
+        assert!(!merges_cluster(&quick[0], SyllableMerge::Held));
+    }
+
+    #[test]
+    fn a_hyphen_or_an_unspaced_script_keeps_words_apart() {
+        let hyphenated = clusters(&[
+            timed("well-", true, 0, 400),
+            timed("known", false, 400, 900),
+        ]);
+        assert!(
+            !merges_cluster(&hyphenated[0], SyllableMerge::Full),
+            "well-known is two words"
+        );
+        let slashed = clusters(&[timed("and/", true, 0, 400), timed("or", false, 400, 900)]);
+        assert!(
+            !merges_cluster(&slashed[0], SyllableMerge::Full),
+            "and/or is two words"
+        );
+        let japanese = clusters(&[
+            timed("こん", true, 0, 400),
+            timed("にちは", false, 400, 900),
+        ]);
+        assert!(!merges_cluster(&japanese[0], SyllableMerge::Full));
+        assert!(!merges_cluster(&japanese[0], SyllableMerge::Steady));
+    }
+
+    #[test]
+    fn boosting_scales_the_grow_and_lift() {
+        let (scale, lift) = boosted_motion(1.1, -2.0, 1.25);
+        assert!((scale - 1.125).abs() < 1e-6, "{scale}");
+        assert!((lift - -2.5).abs() < 1e-6, "{lift}");
+        assert_eq!(boosted_motion(1.1, -2.0, 1.0), (1.1, -2.0));
+        assert_eq!(boosted_motion(1.0, 0.0, 1.25), (1.0, 0.0));
+    }
+
+    #[test]
+    fn seeking_compensates_for_the_player_fade() {
+        assert_eq!(seek_target(1_000, true), 700);
+        assert_eq!(seek_target(200, true), 0);
+        assert_eq!(seek_target(1_000, false), 1_000);
+    }
+
+    #[test]
+    fn a_collapsed_lyrics_preview_reads_the_line_or_its_backing_vocals() {
+        let mut line = Line {
+            text: "  Flashing lights  ".into(),
+            ..Line::default()
+        };
+        assert_eq!(line_preview_text(&line), "Flashing lights");
+
+        line.text.clear();
+        line.background = vec![
+            Syllable {
+                text: "She ".into(),
+                ..Syllable::default()
+            },
+            Syllable {
+                text: "believes".into(),
+                ..Syllable::default()
+            },
+            Syllable {
+                text: " in".into(),
+                part_of_word: true,
+                ..Syllable::default()
+            },
+        ];
+        assert_eq!(line_preview_text(&line), "She believes in");
+
+        line.background.clear();
+        assert_eq!(line_preview_text(&line), "");
     }
 }

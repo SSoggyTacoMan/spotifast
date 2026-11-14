@@ -225,6 +225,37 @@ impl LyricsStyle {
     }
 }
 
+/// Whether a word split into syllables is filled as one word, from its first
+/// syllable to its last, or syllable by syllable as it sounds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyllableMerge {
+    /// Fill each syllable on its own.
+    Off,
+    /// Fill every split word from its first syllable to its last.
+    #[default]
+    Full,
+    /// Only words whose parts are sung steadily: no gap or space between them,
+    /// none much faster or slower than the word as a whole.
+    Steady,
+    /// Only words held long enough to read as a single sustained word.
+    Held,
+}
+
+impl SyllableMerge {
+    pub const ALL: [Self; 4] = [Self::Off, Self::Full, Self::Steady, Self::Held];
+
+    pub fn label(self, locale: crate::i18n::Locale) -> std::borrow::Cow<'static, str> {
+        use crate::i18n::gettext;
+        match self {
+            Self::Off => gettext(locale, "Off"),
+            Self::Full => gettext(locale, "Full"),
+            Self::Steady => gettext(locale, "Steadily sung words"),
+            Self::Held => gettext(locale, "Held words only"),
+        }
+    }
+}
+
 /// Where lines sit across the lyrics column. Left is the reading start, so
 /// right-to-left lyrics anchor at the right edge in that position.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -583,9 +614,31 @@ pub struct Settings {
     /// Fewer frames and finer effects, for slower machines.
     #[serde(default)]
     pub lyrics_low_performance: bool,
-    /// Fill each word evenly from its first syllable to its last.
+    /// Fill each word from its first syllable to its last: always, only when
+    /// its parts are sung steadily, or only when it is held long enough.
+    /// Older files store this as `lyrics_join_words`.
+    #[serde(
+        default,
+        alias = "lyrics_join_words",
+        deserialize_with = "deserialize_syllable_merge"
+    )]
+    pub lyrics_syllable_merge: SyllableMerge,
+    /// Multiply how far sung words grow and lift.
     #[serde(default)]
-    pub lyrics_join_words: bool,
+    pub lyrics_word_motion_boost: bool,
+    /// Start a little before a line that is tapped, so the player's fade-in
+    /// does not swallow its first syllable.
+    #[serde(default)]
+    pub lyrics_seek_fade_compensation: bool,
+    /// Draw the credits as quiet type under the last line, not a card.
+    #[serde(default)]
+    pub lyrics_refined_credits: bool,
+    /// Put the credits on the side of the last duet line.
+    #[serde(default)]
+    pub lyrics_credits_follow_last_line: bool,
+    /// Keep a line that ends while the one above it is still being sung.
+    #[serde(default = "default_true")]
+    pub lyrics_keep_overlapping_lines: bool,
     /// Indent duet lines toward the singer's side.
     #[serde(default = "default_true")]
     pub lyrics_duet_padding: bool,
@@ -764,7 +817,12 @@ impl Default for Settings {
             lyrics_simple_mode: false,
             lyrics_minimal_mode: false,
             lyrics_low_performance: false,
-            lyrics_join_words: false,
+            lyrics_syllable_merge: SyllableMerge::Full,
+            lyrics_word_motion_boost: false,
+            lyrics_seek_fade_compensation: false,
+            lyrics_refined_credits: false,
+            lyrics_credits_follow_last_line: false,
+            lyrics_keep_overlapping_lines: true,
             lyrics_duet_padding: true,
             lyrics_show_translations: true,
             lyrics_show_credits: true,
@@ -821,6 +879,25 @@ fn default_true() -> bool {
     true
 }
 
+/// The old file stored a switch: joining split words is `Full`, leaving them
+/// alone is `Off`. Anything newer is read as itself.
+fn deserialize_syllable_merge<'de, D>(deserializer: D) -> Result<SyllableMerge, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Stored {
+        Mode(SyllableMerge),
+        Joined(bool),
+    }
+    Ok(match Stored::deserialize(deserializer)? {
+        Stored::Mode(mode) => mode,
+        Stored::Joined(true) => SyllableMerge::Full,
+        Stored::Joined(false) => SyllableMerge::Off,
+    })
+}
+
 impl Settings {
     /// Starts the lyrics from one of the three looks, leaving timing,
     /// fullscreen and performance choices alone. Every appearance field
@@ -833,6 +910,11 @@ impl Settings {
         self.lyrics_show_credits = true;
         self.lyrics_background_dim = default_lyrics_percent();
         self.lyrics_cover_color = false;
+        self.lyrics_word_motion_boost = false;
+        self.lyrics_seek_fade_compensation = false;
+        self.lyrics_refined_credits = false;
+        self.lyrics_credits_follow_last_line = false;
+        self.lyrics_keep_overlapping_lines = true;
         match style {
             LyricsStyle::Spicy => {
                 self.lyrics_position = 38;
@@ -854,7 +936,7 @@ impl Settings {
                 self.lyrics_hide_passed_lines = false;
                 self.lyrics_simple_mode = false;
                 self.lyrics_minimal_mode = false;
-                self.lyrics_join_words = false;
+                self.lyrics_syllable_merge = SyllableMerge::Full;
                 self.lyrics_background_pop = true;
             }
             LyricsStyle::AppleMusic => {
@@ -879,7 +961,10 @@ impl Settings {
                 self.lyrics_hide_passed_lines = false;
                 self.lyrics_simple_mode = false;
                 self.lyrics_minimal_mode = false;
-                self.lyrics_join_words = false;
+                self.lyrics_syllable_merge = SyllableMerge::Full;
+                self.lyrics_seek_fade_compensation = true;
+                self.lyrics_refined_credits = true;
+                self.lyrics_credits_follow_last_line = true;
                 self.lyrics_background_pop = true;
             }
             LyricsStyle::Minimal => {
@@ -902,7 +987,8 @@ impl Settings {
                 self.lyrics_hide_passed_lines = true;
                 self.lyrics_simple_mode = true;
                 self.lyrics_minimal_mode = true;
-                self.lyrics_join_words = true;
+                self.lyrics_syllable_merge = SyllableMerge::Full;
+                self.lyrics_refined_credits = true;
                 self.lyrics_duet_padding = false;
                 self.lyrics_show_translations = false;
                 self.lyrics_show_credits = false;
@@ -1361,6 +1447,14 @@ mod tests {
         assert_eq!(settings.volume, 37);
     }
 
+    #[test]
+    fn new_profiles_fill_whole_words_by_default() {
+        assert_eq!(
+            Settings::default().lyrics_syllable_merge,
+            super::SyllableMerge::Full
+        );
+    }
+
     /// Files from before fastframe-audio was the only output name a
     /// librespot backend. It is read and ignored, the rest of the file still
     /// loads, and the key is not written back, which older builds read as
@@ -1480,7 +1574,12 @@ mod tests {
         assert!(!older.lyrics_simple_mode);
         assert!(!older.lyrics_minimal_mode);
         assert!(!older.lyrics_low_performance);
-        assert!(!older.lyrics_join_words);
+        assert_eq!(older.lyrics_syllable_merge, super::SyllableMerge::Full);
+        assert!(!older.lyrics_word_motion_boost);
+        assert!(!older.lyrics_seek_fade_compensation);
+        assert!(!older.lyrics_refined_credits);
+        assert!(!older.lyrics_credits_follow_last_line);
+        assert!(older.lyrics_keep_overlapping_lines);
         assert!(older.lyrics_duet_padding);
         assert!(older.lyrics_show_translations);
         assert!(older.lyrics_show_credits);
@@ -1507,7 +1606,12 @@ mod tests {
             lyrics_simple_mode: true,
             lyrics_minimal_mode: true,
             lyrics_low_performance: true,
-            lyrics_join_words: true,
+            lyrics_syllable_merge: super::SyllableMerge::Steady,
+            lyrics_word_motion_boost: true,
+            lyrics_seek_fade_compensation: true,
+            lyrics_refined_credits: true,
+            lyrics_credits_follow_last_line: true,
+            lyrics_keep_overlapping_lines: false,
             lyrics_duet_padding: false,
             lyrics_show_translations: false,
             lyrics_show_credits: false,
@@ -1536,12 +1640,30 @@ mod tests {
         assert!(restored.lyrics_simple_mode);
         assert!(restored.lyrics_minimal_mode);
         assert!(restored.lyrics_low_performance);
-        assert!(restored.lyrics_join_words);
+        assert_eq!(restored.lyrics_syllable_merge, super::SyllableMerge::Steady);
+        assert!(restored.lyrics_word_motion_boost);
+        assert!(restored.lyrics_seek_fade_compensation);
+        assert!(restored.lyrics_refined_credits);
+        assert!(restored.lyrics_credits_follow_last_line);
+        assert!(!restored.lyrics_keep_overlapping_lines);
         assert!(!restored.lyrics_duet_padding);
         assert!(!restored.lyrics_show_translations);
         assert!(!restored.lyrics_show_credits);
         assert_eq!(restored.lyrics_background_dim, 40);
         assert!(restored.lyrics_cover_color);
+    }
+
+    /// The old join-words switch becomes the matching merge mode, and files
+    /// written since carry the mode's own name.
+    #[test]
+    fn a_joined_words_switch_from_an_older_file_becomes_full_merging() {
+        let joined: Settings = serde_json::from_str(r#"{"lyrics_join_words": true}"#).unwrap();
+        assert_eq!(joined.lyrics_syllable_merge, super::SyllableMerge::Full);
+        let apart: Settings = serde_json::from_str(r#"{"lyrics_join_words": false}"#).unwrap();
+        assert_eq!(apart.lyrics_syllable_merge, super::SyllableMerge::Off);
+        let mode: Settings =
+            serde_json::from_str(r#"{"lyrics_syllable_merge": "steady"}"#).unwrap();
+        assert_eq!(mode.lyrics_syllable_merge, super::SyllableMerge::Steady);
     }
 
     /// A preset writes a coherent whole look but never touches the timing,
@@ -1565,7 +1687,12 @@ mod tests {
         assert!(!settings.lyrics_bounce);
         assert!(!settings.lyrics_rise);
         assert!(!settings.lyrics_scale);
-        assert!(settings.lyrics_join_words);
+        assert_eq!(
+            settings.lyrics_syllable_merge,
+            super::SyllableMerge::Full,
+            "Minimal fills whole words"
+        );
+        assert!(settings.lyrics_refined_credits);
         assert!(!settings.lyrics_show_translations);
 
         settings.apply_lyrics_style(LyricsStyle::AppleMusic);
@@ -1576,12 +1703,18 @@ mod tests {
         assert!(!settings.lyrics_hide_passed_lines);
         assert!(!settings.lyrics_minimal_mode);
         assert!(!settings.lyrics_simple_mode);
+        assert!(settings.lyrics_seek_fade_compensation);
+        assert!(settings.lyrics_refined_credits);
+        assert!(settings.lyrics_credits_follow_last_line);
 
         settings.apply_lyrics_style(LyricsStyle::Spicy);
         assert!(settings.lyrics_bounce);
         assert!(settings.lyrics_glow);
         assert!(settings.lyrics_scale);
-        assert!(!settings.lyrics_join_words);
+        assert_eq!(settings.lyrics_syllable_merge, super::SyllableMerge::Full);
+        assert!(!settings.lyrics_refined_credits);
+        assert!(!settings.lyrics_seek_fade_compensation);
+        assert!(!settings.lyrics_credits_follow_last_line);
         assert!(!settings.lyrics_simple_mode);
         assert_eq!(settings.lyrics_style, LyricsStyle::Spicy);
         assert_eq!(settings.lyrics_offset_ms, 175, "presets leave timing alone");

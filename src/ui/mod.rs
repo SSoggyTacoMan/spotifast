@@ -131,7 +131,7 @@ fn main_min_width(page: f32, sidebar: f32, right_panel: bool) -> f32 {
 }
 
 /// The sidebar's narrowest width.
-pub(crate) const SIDEBAR_MIN_WIDTH: f32 = 210.0;
+pub(crate) const SIDEBAR_MIN_WIDTH: f32 = 160.0;
 
 /// Raise the window's minimum width while the Queue or Lyrics panel is open,
 /// so even at its narrowest the page beside the panels keeps the room its

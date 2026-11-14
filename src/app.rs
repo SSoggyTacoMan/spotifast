@@ -13462,6 +13462,16 @@ impl App {
             }
             Action::ToggleLyricsCard => {
                 self.lyrics_card_collapsed = !self.lyrics_card_collapsed;
+                if !self.lyrics_card_collapsed {
+                    // Reopening gives the body a clean follow: its scroll area
+                    // may have been away for many frames, so it must centre on
+                    // the sung line again.
+                    self.lyrics_line_shown = None;
+                }
+                // The card changes its whole layout. Draw the new state now,
+                // even when the song is paused and nothing else asks for a
+                // frame.
+                ctx.request_repaint();
             }
             Action::ToggleFriendsPanel => {
                 self.show_friends_panel = !self.show_friends_panel;
@@ -15890,10 +15900,13 @@ mod tests {
             "the page keeps {} of the {least} points its bar needs",
             1000.0 - sidebar - queue
         );
-        assert!(sidebar >= 210.0 && queue >= crate::theme::SIDE_PANEL_MIN_WIDTH);
+        assert!(
+            sidebar >= crate::ui::SIDEBAR_MIN_WIDTH && queue >= crate::theme::SIDE_PANEL_MIN_WIDTH
+        );
         assert_eq!(app.settings.sidebar_width, 400.0);
         assert_eq!(app.settings.queue_width, 500.0);
-        let min = (210.0 + crate::theme::SIDE_PANEL_MIN_WIDTH + least).round();
+        let min =
+            (crate::ui::SIDEBAR_MIN_WIDTH + crate::theme::SIDE_PANEL_MIN_WIDTH + least).round();
         assert!(
             commands.iter().any(|command| matches!(
                 command,
@@ -24090,10 +24103,13 @@ mod tests {
         let ctx = egui::Context::default();
         let mut app = test_app("toggle-lyrics-card");
         assert!(!app.lyrics_card_collapsed);
+        app.lyrics_line_shown = Some(Some(4));
         app.apply(Action::ToggleLyricsCard, &ctx);
         assert!(app.lyrics_card_collapsed);
+        assert_eq!(app.lyrics_line_shown, Some(Some(4)));
         app.apply(Action::ToggleLyricsCard, &ctx);
         assert!(!app.lyrics_card_collapsed);
+        assert_eq!(app.lyrics_line_shown, None);
         app.backend.shutdown();
     }
 

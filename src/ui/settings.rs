@@ -6,7 +6,9 @@ use crate::api::models::pick_image;
 use crate::app::App;
 use crate::i18n::{gettext, ngettext, pgettext};
 use crate::model::{Action, Dialog};
-use crate::settings::{LanguageChoice, LyricsAlign, LyricsStyle, ProxyMode, ThemeChoice};
+use crate::settings::{
+    LanguageChoice, LyricsAlign, LyricsStyle, ProxyMode, SyllableMerge, ThemeChoice,
+};
 use crate::theme::{self, Icon, Palette};
 use crate::winamp::SkinKind;
 
@@ -1881,10 +1883,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             gettext(locale, "Keep only the line being sung and the ones ahead."),
         ),
         RowText::new(
-            gettext(locale, "Join split words"),
+            gettext(locale, "Merge syllables"),
             gettext(
                 locale,
-                "Fill each word evenly from its first syllable to its last.",
+                "Draw a word split into syllables as one word, filling evenly from its first syllable to its last.",
             ),
         ),
         RowText::new(
@@ -1946,7 +1948,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             gettext(locale, "Spicy Lyrics API key"),
             gettext(
                 locale,
-                "Word-synced lyrics token with automatic fallback to Spotify and LRCLIB.",
+                "Word-synced lyrics token. Without one, community catalogues, Spotify and LRCLIB answer.",
             ),
         ),
         RowText::new(
@@ -1954,6 +1956,38 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             gettext(
                 locale,
                 "Show secondary lines while active and tuck them away afterwards.",
+            ),
+        ),
+        RowText::new(
+            gettext(locale, "Boost word motion"),
+            gettext(locale, "Multiply how far sung words grow and lift."),
+        ),
+        RowText::new(
+            gettext(locale, "Seek fade compensation"),
+            gettext(
+                locale,
+                "Start a little before a line you tap, so the player's fade-in does not swallow its first word.",
+            ),
+        ),
+        RowText::new(
+            gettext(locale, "Refined credits"),
+            gettext(
+                locale,
+                "Show the credits as quiet type close under the last line, dim until the song is sung.",
+            ),
+        ),
+        RowText::new(
+            gettext(locale, "Credits follow the last singer"),
+            gettext(
+                locale,
+                "Place the credits on the side of the last duet line.",
+            ),
+        ),
+        RowText::new(
+            gettext(locale, "Keep overlapping lines"),
+            gettext(
+                locale,
+                "Keep a line that ends while the one above it is still being sung on screen, dimmed.",
             ),
         ),
     ];
@@ -2207,14 +2241,31 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 &lyrics_rows[20],
                 |settings| &mut settings.lyrics_minimal_mode,
             );
-            lyrics_switch_row(
-                app,
+            filtered_row(
                 ui,
                 &palette,
                 &needle,
                 &lyrics_title,
                 &lyrics_rows[21],
-                |settings| &mut settings.lyrics_join_words,
+                |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        for mode in SyllableMerge::ALL {
+                            if theme::soft_button(
+                                ui,
+                                &palette,
+                                None,
+                                &mode.label(locale),
+                                app.settings.lyrics_syllable_merge == mode,
+                            )
+                            .clicked()
+                            {
+                                app.settings.lyrics_syllable_merge = mode;
+                                app.mark_settings_dirty();
+                            }
+                        }
+                    });
+                },
             );
             lyrics_switch_row(
                 app,
@@ -2385,6 +2436,51 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                             });
                     });
                 },
+            );
+            lyrics_switch_row(
+                app,
+                ui,
+                &palette,
+                &needle,
+                &lyrics_title,
+                &lyrics_rows[34],
+                |settings| &mut settings.lyrics_word_motion_boost,
+            );
+            lyrics_switch_row(
+                app,
+                ui,
+                &palette,
+                &needle,
+                &lyrics_title,
+                &lyrics_rows[35],
+                |settings| &mut settings.lyrics_seek_fade_compensation,
+            );
+            lyrics_switch_row(
+                app,
+                ui,
+                &palette,
+                &needle,
+                &lyrics_title,
+                &lyrics_rows[36],
+                |settings| &mut settings.lyrics_refined_credits,
+            );
+            lyrics_switch_row(
+                app,
+                ui,
+                &palette,
+                &needle,
+                &lyrics_title,
+                &lyrics_rows[37],
+                |settings| &mut settings.lyrics_credits_follow_last_line,
+            );
+            lyrics_switch_row(
+                app,
+                ui,
+                &palette,
+                &needle,
+                &lyrics_title,
+                &lyrics_rows[38],
+                |settings| &mut settings.lyrics_keep_overlapping_lines,
             );
         });
     }

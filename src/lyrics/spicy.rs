@@ -34,12 +34,27 @@ const DOCS_KEY_ENV: &str = "SPICY_LYRICS_SECRET_KEY";
 /// The heading shown above the credits at the end of the lyrics.
 pub fn attribution_title(attribution: &Attribution, locale: crate::i18n::Locale) -> String {
     use crate::i18n::gettext;
+    if let Some(provider) = remote_provider(&attribution.source) {
+        return gettext(locale, "Lyrics from {provider}").replace("{provider}", provider);
+    }
     if attribution.source.is_empty() || attribution.source == "spicy_lyrics" {
         gettext(locale, "Lyrics from {provider}").replace("{provider}", PROVIDER)
     } else {
         gettext(locale, "Lyrics from {provider} via {source}")
             .replace("{provider}", PROVIDER)
             .replace("{source}", &source_label(&attribution.source))
+    }
+}
+
+/// The remote providers that answer on their own, without Spicy Lyrics in
+/// front of them. Their names are products, not translated words.
+fn remote_provider(source: &str) -> Option<&'static str> {
+    match source {
+        "amll_ttml_db" => Some("AMLL TTML DB"),
+        "unison" => Some("Unison"),
+        "lrc_red" => Some("lrc.red"),
+        "netease" => Some("NetEase"),
+        _ => None,
     }
 }
 
