@@ -1936,7 +1936,13 @@ pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
                     },
                 );
             }
-            "lyrics" | "lyrics-lines" | "lyrics-fullscreen" => {
+            "lyrics"
+            | "lyrics-lines"
+            | "lyrics-fullscreen"
+            | "lyrics-now-playing"
+            | "lyrics-now-playing-open"
+            | "lyrics-now-playing-narrow"
+            | "lyrics-now-playing-open-narrow" => {
                 app.lyrics_uri = app.now_playing().map(|now| now.uri);
                 // `lyrics` and the real full screen show the word-synced
                 // renderer; `lyrics-lines` keeps the older line-synced look
@@ -1953,6 +1959,28 @@ pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
                 // karaoke fill part way through a word.
                 if let Some(remote) = &mut app.remote {
                     remote.state.progress_ms = Some(80_400);
+                }
+                if matches!(
+                    surface,
+                    "lyrics-now-playing"
+                        | "lyrics-now-playing-open"
+                        | "lyrics-now-playing-narrow"
+                        | "lyrics-now-playing-open-narrow"
+                ) {
+                    app.settings
+                        .apply_lyrics_style(crate::settings::LyricsStyle::AppleMusic);
+                    app.settings.lyrics_width = if surface.contains("narrow") {
+                        280.0
+                    } else {
+                        360.0
+                    };
+                    app.local.position_ms = 80_400;
+                    app.local.position_at = None;
+                    if let Some(remote) = &mut app.remote {
+                        remote.state.progress_ms = Some(80_400);
+                    }
+                    app.lyrics_card_collapsed =
+                        matches!(surface, "lyrics-now-playing" | "lyrics-now-playing-narrow");
                 }
                 if surface == "lyrics-fullscreen" {
                     app.actions.push(Action::SetLyricsFullscreen(true));
@@ -8979,8 +9007,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    /// Collapsing keeps the sung line as a preview and the body comes back
-    /// with its scroll viewport intact.
+    /// Collapsing keeps a live five-line stage, while reopening restores the
+    /// same full-height panel and followed scroll position through two cycles.
     #[cfg(feature = "demo")]
     #[test]
     fn the_lyrics_card_collapses_to_a_preview_and_opens_again() {
@@ -8989,7 +9017,25 @@ mod tests {
         app.show_lyrics_panel = true;
         app.lyrics = Loadable::Loaded(Some(word_sample_lyrics()));
         app.lyrics_following = true;
-        let texts = |app: &mut App| screen_texts(&ctx, app);
+        app.local.position_ms = 80_400;
+        app.local.position_at = None;
+        if let Some(remote) = &mut app.remote {
+            remote.state.progress_ms = Some(80_400);
+        }
+        let size = egui::vec2(1100.0, 900.0);
+        let texts = |app: &mut App| view_frame_sized(&ctx, app, Vec::new(), App::frame_ui, size);
+        let frame = |app: &mut App| {
+            view_frame_sized(&ctx, app, Vec::new(), App::frame_ui, size);
+        };
+        let click = |app: &mut App, at: egui::Pos2| {
+            view_frame_sized(
+                &ctx,
+                app,
+                pointer_click(at, egui::PointerButton::Primary),
+                App::frame_ui,
+                size,
+            );
+        };
         let header_at = |drawn: &[(String, egui::Rect)]| {
             drawn
                 .iter()
@@ -8998,63 +9044,163 @@ mod tests {
                 .max_by(|a, b| a.x.total_cmp(&b.x))
                 .expect("the card header is drawn")
         };
-        let body_word = "asleep";
-        let preview_line = "But the night is wide and the road is long";
+        let panel_height = || {
+            egui::containers::panel::PanelState::load(&ctx, egui::Id::new("lyrics-panel"))
+                .expect("the lyrics panel is drawn")
+                .outer_rect
+                .height()
+        };
         // Let the opening scroll settle before reading the body.
         for _ in 0..60 {
-            frame(&ctx, &mut app);
+            frame(&mut app);
         }
         let drawn = texts(&mut app);
-        let header = header_at(&drawn);
         assert!(
-            drawn.iter().any(|(text, _)| text == body_word),
+            drawn.iter().any(|(text, _)| text == "asleep"),
             "the open card shows the lyrics body: {drawn:?}"
         );
-
-        frame_events(
-            &ctx,
-            &mut app,
-            pointer_click(header, egui::PointerButton::Primary),
-        );
-        for _ in 0..30 {
-            frame(&ctx, &mut app);
-        }
-        assert!(app.lyrics_card_collapsed);
-        let drawn = texts(&mut app);
-        assert!(
-            !drawn.iter().any(|(text, _)| text == body_word),
-            "the collapsed card hides the lyrics body"
-        );
-        assert!(
-            drawn.iter().any(|(text, _)| text == preview_line),
-            "the collapsed card keeps the sung line as a preview"
-        );
-
-        let preview = drawn
+        let panel_height_at_rest = panel_height();
+        let followed_night_y = drawn
             .iter()
-            .find(|(text, _)| text == preview_line)
-            .expect("the preview line is drawn")
+            .find(|(text, _)| text == "night")
+            .expect("the open card draws the sung word")
             .1
-            .center();
-        frame_events(
-            &ctx,
-            &mut app,
-            pointer_click(preview, egui::PointerButton::Primary),
-        );
-        for _ in 0..30 {
-            frame(&ctx, &mut app);
+            .center()
+            .y;
+
+        for cycle in 0..2 {
+            let drawn = texts(&mut app);
+            let header = header_at(&drawn);
+            click(&mut app, header);
+            for _ in 0..30 {
+                frame(&mut app);
+            }
+            assert!(app.lyrics_card_collapsed);
+            assert_eq!(panel_height(), panel_height_at_rest);
+
+            let mut drawn = texts(&mut app);
+            assert!(
+                !drawn.iter().any(|(text, _)| text == "asleep"),
+                "the collapsed card lays out only its five-line window"
+            );
+            let stage = ctx
+                .read_response(egui::Id::new("lyrics-card-stage"))
+                .expect("the collapsed stage has a stable response")
+                .rect;
+            for word in ["city", "map", "night", "there's", "Coffee"] {
+                let line = drawn
+                    .iter()
+                    .find(|(text, _)| text == word)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "collapsed cycle {cycle} draws its surrounding lyric line containing {word}: {drawn:?}"
+                        )
+                    })
+                    .1;
+                assert!(
+                    line.center().y >= stage.top() && line.center().y <= stage.bottom(),
+                    "collapsed cycle {cycle} keeps {word} inside the stage: {line:?}, {stage:?}"
+                );
+            }
+            let active = drawn
+                .iter()
+                .find(|(text, _)| text == "night")
+                .expect("the collapsed stage keeps the active line")
+                .1;
+            assert!(active.top() >= stage.top() && active.bottom() <= stage.bottom());
+            assert!(
+                (active.center().y - (stage.top() + stage.height() * 0.45)).abs() < 20.0,
+                "the active line sits at 45 percent of the collapsed stage: {active:?}, {stage:?}"
+            );
+
+            if cycle == 0 {
+                // A lyric click seeks; it must not also toggle the card through
+                // the padding response behind it.
+                click(&mut app, active.center());
+                frame(&mut app);
+                assert!(
+                    app.lyrics_card_collapsed,
+                    "clicking a lyric does not collapse or expand the card"
+                );
+                drawn = texts(&mut app);
+            }
+
+            let header = header_at(&drawn);
+            click(&mut app, header);
+            for _ in 0..30 {
+                frame(&mut app);
+            }
+            assert!(!app.lyrics_card_collapsed);
+            assert_eq!(panel_height(), panel_height_at_rest);
+            let drawn = texts(&mut app);
+            let reopened_night_y = drawn
+                .iter()
+                .find(|(text, _)| text == "night")
+                .expect("opening again centres the sung line")
+                .1
+                .center()
+                .y;
+            assert!(
+                (reopened_night_y - followed_night_y).abs() < 1.0,
+                "cycle {cycle} kept the expanded scroll position: {followed_night_y} to {reopened_night_y}"
+            );
         }
-        assert!(!app.lyrics_card_collapsed);
-        let drawn = texts(&mut app);
-        assert!(
-            drawn.iter().any(|(text, _)| text == body_word),
-            "opening again brings the lyrics body back"
-        );
-        assert!(
-            drawn.iter().any(|(text, _)| text == "night"),
-            "opening again centres the sung line: {drawn:?}"
-        );
         app.backend.shutdown();
+    }
+
+    /// Five logical lines stay inside the collapsed stage at both heights its
+    /// clamp is meant to support, with the active block still at 45 percent.
+    #[cfg(feature = "demo")]
+    #[test]
+    fn the_collapsed_stage_fits_five_lines_at_240_and_300() {
+        for (screen_height, expected_height) in [(871.0, 240.0), (1014.0, 300.0)] {
+            let (ctx, mut app) = accessible_app(&format!("lyrics-stage-{expected_height}"));
+            app.backend.set_offline(true);
+            app.show_lyrics_panel = true;
+            app.lyrics = Loadable::Loaded(Some(word_sample_lyrics()));
+            app.lyrics_following = true;
+            app.lyrics_card_collapsed = true;
+            app.local.position_ms = 80_400;
+            app.local.position_at = None;
+            if let Some(remote) = &mut app.remote {
+                remote.state.progress_ms = Some(80_400);
+            }
+            let size = egui::vec2(1100.0, screen_height);
+            for _ in 0..30 {
+                view_frame_sized(&ctx, &mut app, Vec::new(), App::frame_ui, size);
+            }
+            let drawn = view_frame_sized(&ctx, &mut app, Vec::new(), App::frame_ui, size);
+            let stage = ctx
+                .read_response(egui::Id::new("lyrics-card-stage"))
+                .expect("the collapsed stage has a stable response")
+                .rect;
+            assert!(
+                (stage.height() - expected_height).abs() < 1.0,
+                "stage height {} at screen height {screen_height}",
+                stage.height()
+            );
+            for word in ["city", "map", "night", "there's", "Coffee"] {
+                let line = drawn
+                    .iter()
+                    .find(|(text, _)| text == word)
+                    .unwrap_or_else(|| panic!("the five-line stage draws {word}: {drawn:?}"))
+                    .1;
+                assert!(
+                    line.center().y >= stage.top() && line.center().y <= stage.bottom(),
+                    "{word} stays inside the {expected_height}-point stage: {line:?}, {stage:?}"
+                );
+            }
+            let active = drawn
+                .iter()
+                .find(|(text, _)| text == "night")
+                .expect("the active line is drawn")
+                .1;
+            assert!(
+                (active.center().y - (stage.top() + stage.height() * 0.45)).abs() < 20.0,
+                "the active line sits at 45 percent: {active:?}, {stage:?}"
+            );
+            app.backend.shutdown();
+        }
     }
 
     /// The body has a real viewport: a wheel over it moves the words and

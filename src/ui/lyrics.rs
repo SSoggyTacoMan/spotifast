@@ -1652,16 +1652,49 @@ fn request_word_repaint(
     now: &crate::app::NowPlaying,
     lyrics: &Lyrics,
     low_performance: bool,
+    position_ms: u32,
 ) {
-    // The fill is progress, not motion: it keeps moving even when the
-    // desktop asks for less animation.
-    if now.playing && lyrics.word_synced() {
-        if low_performance {
-            ctx.request_repaint_after(std::time::Duration::from_millis(33));
+    if !now.playing {
+        return;
+    }
+    if lyrics.word_synced() {
+        let singing = lyrics.lines.iter().any(|line| {
+            line.syllables
+                .iter()
+                .chain(&line.background)
+                .any(|syllable| {
+                    position_ms >= syllable.at_ms
+                        && position_ms < syllable.end_ms.max(syllable.at_ms)
+                })
+        });
+        // The fill is progress, not motion: it keeps moving even when the
+        // desktop asks for less animation. A silent gap sleeps until the next
+        // timed word or line instead of redrawing an unchanged stage.
+        if singing {
+            if low_performance {
+                ctx.request_repaint_after(std::time::Duration::from_millis(33));
+            } else {
+                ctx.request_repaint();
+            }
         } else {
-            ctx.request_repaint();
+            let next_word = lyrics
+                .lines
+                .iter()
+                .flat_map(|line| line.syllables.iter().chain(&line.background))
+                .filter_map(|syllable| (syllable.at_ms > position_ms).then_some(syllable.at_ms))
+                .min();
+            let next_line = lyrics
+                .lines
+                .iter()
+                .filter_map(|line| line.at_ms)
+                .find(|at| *at > position_ms);
+            if let Some(next) = next_word.into_iter().chain(next_line).min() {
+                ctx.request_repaint_after(std::time::Duration::from_millis(u64::from(
+                    next - position_ms,
+                )));
+            }
         }
-    } else if now.playing && lyrics.synced {
+    } else if lyrics.synced {
         // Interlude dots still need to breathe on a line-synced track.
         let step = if low_performance { 100 } else { 50 };
         ctx.request_repaint_after(std::time::Duration::from_millis(step));
@@ -2286,59 +2319,304 @@ fn lyrics_settings_popup(
         });
 }
 
-/// Up to two lyric lines to show under the collapsed Now Playing card: the
-/// line being sung, then the one after it.
-fn lyrics_preview(app: &App) -> Vec<String> {
-    let Some(now) = app.now_playing() else {
-        return Vec::new();
-    };
-    let Loadable::Loaded(Some(lyrics)) = &app.lyrics else {
-        return Vec::new();
-    };
-    let position_ms = (now.position_ms as i64 + app.settings.lyrics_offset_ms as i64).max(0) as u32;
-    let active_at = position_ms.saturating_add(app.settings.lyrics_early_scroll_ms);
-    let active = lyrics.active_line_with_hold(active_at, app.settings.lyrics_line_hold_ms);
-    let start = active.unwrap_or_else(|| {
-        lyrics
-            .lines
-            .iter()
-            .position(|line| line.at_ms.is_some_and(|at| at >= position_ms))
-            .unwrap_or(0)
-    });
-    let mut preview = Vec::new();
-    for line in lyrics.lines.iter().skip(start) {
-        let text = line_preview_text(line);
-        if text.is_empty() {
-            continue;
-        }
-        preview.push(text);
-        if preview.len() == 2 {
-            break;
-        }
-    }
-    preview
+#[derive(Clone, Copy)]
+struct StageOptions {
+    /// Where the active line sits, which also chooses how much of a bounded
+    /// window belongs before it.
+    active_fraction: f32,
+    /// The most lines to lay out. None is the complete expanded view.
+    line_budget: Option<usize>,
+    /// Whether timed lines seek when clicked.
+    interactive: bool,
 }
 
-/// The words a line shows in a preview, including a backing-vocal-only line.
-fn line_preview_text(line: &Line) -> String {
-    let text = line.text.trim();
-    if !text.is_empty() {
-        return text.to_owned();
+#[derive(Default)]
+struct PaintedStage {
+    active_rect: Option<Rect>,
+    rows: Vec<egui::Response>,
+}
+
+/// The bounded display window around the active line. Callers may slice with
+/// the same range before passing a small collapsed window back to the stage.
+fn stage_window(
+    line_count: usize,
+    active: Option<usize>,
+    active_fraction: f32,
+    line_budget: Option<usize>,
+) -> std::ops::Range<usize> {
+    let Some(budget) = line_budget.filter(|budget| *budget > 0) else {
+        return 0..line_count;
+    };
+    if line_count <= budget {
+        return 0..line_count;
     }
-    let mut joined = String::new();
-    let mut joins_next = false;
-    for syllable in &line.background {
-        let part = syllable.text.trim();
-        if part.is_empty() {
+    let before = ((budget as f32 * active_fraction.clamp(0.0, 1.0)) as usize).min(budget - 1);
+    let anchor = active.unwrap_or(0).min(line_count - 1);
+    let start = anchor.saturating_sub(before).min(line_count - budget);
+    start..start + budget
+}
+
+/// Paints lyric rows and their word motion, but leaves view scrolling, follow
+/// state, loading messages, and credits to the caller.
+fn paint_lyrics_stage(
+    app: &mut App,
+    ui: &mut egui::Ui,
+    lines: &[Line],
+    active: Option<usize>,
+    motion: &MotionLook,
+    options: StageOptions,
+) -> PaintedStage {
+    let Some(now) = app.now_playing() else {
+        return PaintedStage::default();
+    };
+    let synced = matches!(&app.lyrics, Loadable::Loaded(Some(lyrics)) if lyrics.synced);
+    let fullscreen = app.lyrics_fullscreen.is_some();
+    let palette = theme::Palette::dark();
+    let position_ms = (now.position_ms as i64 + app.settings.lyrics_offset_ms as i64).max(0) as u32;
+    let font_scale = (app.settings.lyrics_font_size as f32 / 100.0).clamp(0.7, 1.8);
+    let collapsed_scale = if options.line_budget.is_some() {
+        0.8
+    } else {
+        1.0
+    };
+    let line_size = if fullscreen {
+        (ui.available_width() * 0.052).clamp(31.0, 52.0) * font_scale
+    } else {
+        LINE_SIZE * font_scale * collapsed_scale
+    };
+    let line_gap = if fullscreen {
+        32.0 * (f32::from(app.settings.lyrics_spacing) / 100.0)
+    } else {
+        LINE_GAP
+            * font_scale
+            * collapsed_scale
+            * if options.line_budget.is_some() {
+                0.35
+            } else {
+                1.0
+            }
+            * (f32::from(app.settings.lyrics_spacing) / 100.0)
+    };
+    let active_color = if app.settings.lyrics_cover_color && !app.settings.lyrics_simple_mode {
+        blend(playing_colors(app)[0], Color32::WHITE, 0.45)
+    } else {
+        Color32::WHITE
+    };
+    let active_alpha = if app.settings.lyrics_style == LyricsStyle::AppleMusic
+        || app.settings.lyrics_simple_mode
+    {
+        1.0
+    } else {
+        0.85
+    };
+    let word_fill = with_alpha(active_color, active_alpha);
+    let milkdrop = fullscreen && app.milkdrop_behind_lyrics();
+    let base_quiet = palette.text.gamma_multiply(if fullscreen {
+        if milkdrop { 0.56 } else { 0.34 }
+    } else {
+        0.35
+    });
+    let base_sung = palette.text.gamma_multiply(if fullscreen {
+        if milkdrop { 0.66 } else { 0.44 }
+    } else {
+        0.48
+    });
+    let base_active = palette.text.gamma_multiply(if fullscreen {
+        if milkdrop { 0.66 } else { 0.55 }
+    } else {
+        0.55
+    });
+    let hide_passed =
+        fullscreen && (app.settings.lyrics_hide_passed_lines || app.settings.lyrics_minimal_mode);
+    let viewport = ui.clip_rect();
+    let window = stage_window(
+        lines.len(),
+        active,
+        options.active_fraction,
+        options.line_budget,
+    );
+    let mut painted = PaintedStage::default();
+
+    for (index, line) in lines[window.clone()].iter().enumerate() {
+        let index = window.start + index;
+        let is_active = active == Some(index);
+        let animation_id = egui::Id::new("lyric-line").with((
+            fullscreen,
+            options.line_budget.is_some(),
+            &now.uri,
+            line.at_ms,
+            index,
+        ));
+        let lit = ui.ctx().animate_bool_with_time(
+            animation_id,
+            is_active,
+            crate::motion::seconds(ui.ctx(), motion.line_fade),
+        );
+        let lit_eased = lit * lit * (3.0 - 2.0 * lit);
+        let passed = active.is_some_and(|active_idx| index < active_idx);
+        let overlapping = fullscreen
+            && passed
+            && app.settings.lyrics_keep_overlapping_lines
+            && active
+                .and_then(|active_idx| lines.get(active_idx))
+                .is_some_and(|current| {
+                    line.end_ms
+                        .zip(current.at_ms)
+                        .is_some_and(|(end, active_at)| end > active_at)
+                });
+        if hide_passed && passed && !overlapping && lit < 0.02 {
             continue;
         }
-        if !joined.is_empty() && !joins_next {
-            joined.push(' ');
+        let distance = active.map_or(0, |active_idx| index.abs_diff(active_idx));
+        let focus = if app.settings.lyrics_distance_blur {
+            motion.focus_factor(distance)
+        } else {
+            1.0
+        };
+        let dim = focus * motion.dim;
+        let quiet = base_quiet.gamma_multiply(dim);
+        let sung = base_sung.gamma_multiply(dim);
+        let active_base = base_active.gamma_multiply(focus);
+        let resting = if line.at_ms.is_some_and(|at| at < position_ms) {
+            sung
+        } else {
+            quiet
+        };
+        let base = if is_active {
+            active_base
+        } else {
+            blend(resting, active_base, lit_eased)
+        };
+        let color = if fullscreen && !synced {
+            palette.text
+        } else {
+            blend(resting, active_color, lit_eased)
+        };
+        let fill_strength = if is_active { 1.0 } else { lit_eased };
+        let grown = if fullscreen && synced {
+            1.0 + (motion.active_growth - 1.0) * lit_eased
+        } else {
+            1.0
+        };
+        let base_size = line_size.round();
+        let wrap = if fullscreen {
+            ui.available_width() / motion.active_growth.max(1.0)
+        } else {
+            (ui.clip_rect().right() - ui.cursor().min.x).max(1.0)
+        };
+        let opacity = if fullscreen {
+            let top = ui.cursor().top();
+            let center = top + base_size * 0.5;
+            let edge = ((center - viewport.top()).min(viewport.bottom() - center)
+                / (base_size * 2.0))
+                .clamp(0.0, 1.0);
+            edge * edge * (3.0 - 2.0 * edge)
+        } else {
+            1.0
+        };
+        let rise = if motion.rise && is_active {
+            (1.0 - lit_eased) * base_size * if fullscreen { 0.14 } else { 0.12 }
+        } else {
+            0.0
+        };
+        let look = motion.line(
+            if is_active {
+                theme::lyrics_sung(base_size)
+            } else {
+                theme::lyrics_quiet(base_size)
+            },
+            base,
+            word_fill,
+            wrap,
+            rise,
+        );
+        let indent = if motion.duet_padding && line.opposite_aligned {
+            (wrap * 0.07).min(56.0)
+        } else {
+            0.0
+        };
+        if line.text.is_empty()
+            && !line.background.is_empty()
+            && background_pop(ui, line, position_ms, is_active, &look, index) <= 0.01
+        {
+            continue;
         }
-        joined.push_str(part);
-        joins_next = syllable.part_of_word;
+        let draw_line = |ui: &mut egui::Ui| {
+            if fullscreen {
+                ui.multiply_opacity(opacity);
+            }
+            if line.text.is_empty() && line.background.is_empty() && synced {
+                paint_interlude(
+                    ui,
+                    is_active,
+                    color,
+                    look.glow,
+                    base_size,
+                    wrap,
+                    now.playing,
+                    line.at_ms.unwrap_or(0),
+                    line.end_ms.unwrap_or(0),
+                    position_ms,
+                )
+            } else if word_line(line) {
+                paint_word_line(
+                    ui,
+                    line,
+                    position_ms,
+                    is_active,
+                    fill_strength,
+                    &look,
+                    index,
+                )
+                .0
+            } else {
+                let sense = if options.interactive {
+                    Sense::click()
+                } else {
+                    Sense::hover()
+                };
+                paint_plain_line(ui, &line.text, &look, color, is_active, indent, sense)
+            }
+        };
+        let response = if fullscreen && (grown - 1.0).abs() > 0.005 {
+            let origin = ui.cursor().min;
+            let pivot_x = match look.align {
+                LyricsAlign::Center => origin.x + wrap * 0.5,
+                LyricsAlign::Right => origin.x + wrap,
+                LyricsAlign::Left => origin.x,
+            };
+            let pivot = pos2(pivot_x, origin.y + base_size * 0.5);
+            let transform = egui::emath::TSTransform::new(pivot.to_vec2() * (1.0 - grown), grown);
+            ui.with_visual_transform(transform, draw_line).inner
+        } else {
+            ui.scope(draw_line).inner
+        };
+        let response = if options.interactive && (synced || fullscreen) {
+            response.on_hover_cursor(egui::CursorIcon::PointingHand)
+        } else {
+            response
+        };
+        let rect = response.rect;
+        if options.interactive
+            && synced
+            && response.clicked()
+            && let Some(at_ms) = line.at_ms
+        {
+            let at = seek_target(at_ms, app.settings.lyrics_seek_fade_compensation);
+            app.actions.push(Action::Seek(at));
+            if fullscreen {
+                app.actions.push(Action::FollowLyrics);
+            } else {
+                app.lyrics_following = true;
+            }
+        }
+        if is_active {
+            painted.active_rect = Some(rect);
+        }
+        painted.rows.push(response);
+        ui.add_space(line_gap);
     }
-    joined
+    painted
 }
 
 /// The playback context, the cover stage, the track metadata with its save
@@ -2433,7 +2711,6 @@ fn now_playing_stage(app: &mut App, ui: &mut egui::Ui) {
         app.actions.push(Action::ToggleSaved(now.uri));
     }
 
-    let preview = lyrics_preview(app);
     let locale = app.locale;
     let collapsed = app.lyrics_card_collapsed;
 
@@ -2481,46 +2758,132 @@ fn now_playing_stage(app: &mut App, ui: &mut egui::Ui) {
     }
 
     if collapsed {
-        if !preview.is_empty() {
-            let lines = preview.len().min(2);
-            let preview_rect = Rect::from_min_size(
-                pos2(ui.cursor().min.x, ui.cursor().min.y + 1.0),
-                vec2(ui.available_width().max(1.0), lines as f32 * 20.0 + 2.0),
-            );
-            ui.allocate_exact_size(preview_rect.size(), Sense::hover());
-            let mut preview_ui = ui.new_child(UiBuilder::new().max_rect(preview_rect));
-            preview_ui.set_clip_rect(preview_rect);
-            preview_ui.spacing_mut().item_spacing.y = 1.0;
-            for (index, line) in preview.iter().take(2).enumerate() {
-                let color = if index == 0 {
-                    palette.text.gamma_multiply(0.82)
-                } else {
-                    palette.secondary.gamma_multiply(0.72)
-                };
-                preview_ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(line)
-                            .font(theme::regular(13.0))
-                            .color(color),
-                    )
-                    .truncate(),
-                );
-            }
-            let response = ui.interact(
-                preview_rect,
-                egui::Id::new("lyrics-card-preview"),
+        let height = (ui.available_height() * 0.42).clamp(140.0, 300.0);
+        let stage_size = vec2(ui.available_width().max(1.0), height);
+        let (stage_rect, _) = ui.allocate_exact_size(stage_size, Sense::hover());
+        let padding = ui
+            .interact(
+                stage_rect,
+                egui::Id::new("lyrics-card-stage"),
                 Sense::click(),
+            )
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+
+        let mut placeholder = None;
+        let display = match &app.lyrics {
+            Loadable::NotLoaded | Loadable::Loading => {
+                placeholder = Some(gettext(locale, "Loading…"));
+                None
+            }
+            Loadable::Failed(error) => {
+                placeholder = Some(
+                    gettext(locale, "Couldn't fetch the lyrics: {error}")
+                        .replace("{error}", error)
+                        .into(),
+                );
+                None
+            }
+            Loadable::Loaded(None) => {
+                placeholder = Some(gettext(locale, "No lyrics"));
+                None
+            }
+            Loadable::Loaded(Some(lyrics)) if lyrics.instrumental || lyrics.lines.is_empty() => {
+                placeholder = Some(gettext(
+                    locale,
+                    if lyrics.instrumental {
+                        "Instrumental"
+                    } else {
+                        "No lyrics"
+                    },
+                ));
+                None
+            }
+            Loadable::Loaded(Some(lyrics)) => Some(
+                lyrics
+                    .clone()
+                    .with_interludes(app.settings.lyrics_minimal_mode),
+            ),
+        };
+
+        if let Some(lyrics) = display {
+            let Some(now) = app.now_playing() else {
+                return;
+            };
+            let position_ms =
+                (now.position_ms as i64 + app.settings.lyrics_offset_ms as i64).max(0) as u32;
+            let active_at = position_ms.saturating_add(app.settings.lyrics_early_scroll_ms);
+            let active = lyrics.active_line_with_hold(active_at, app.settings.lyrics_line_hold_ms);
+            let motion = MotionLook::from_settings(&app.settings, 22);
+            let options = StageOptions {
+                active_fraction: 0.45,
+                line_budget: Some(5),
+                interactive: true,
+            };
+            let window = stage_window(
+                lyrics.lines.len(),
+                active,
+                options.active_fraction,
+                options.line_budget,
             );
-            if response.hovered() {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-            }
-            if response.clicked() {
-                app.actions.push(Action::ToggleLyricsCard);
-            }
+            let window_active = active.and_then(|index| {
+                index
+                    .checked_sub(window.start)
+                    .filter(|index| *index < window.len())
+            });
+            let lines = &lyrics.lines[window];
+            let mut stage_ui = ui.new_child(UiBuilder::new().max_rect(stage_rect));
+            stage_ui.set_clip_rect(stage_rect);
+            egui::ScrollArea::vertical()
+                .id_salt("lyrics-card-stage")
+                .auto_shrink([false, false])
+                .animated(false)
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                .show(&mut stage_ui, |ui| {
+                    ui.spacing_mut().scroll.fade.strength = 0.0;
+                    ui.spacing_mut().scroll.fade.size = 0.0;
+                    // Symmetric scroll room lets the measured active block
+                    // reach 45 percent wherever it falls in the five-line
+                    // window. It is not used to guess the active position.
+                    ui.add_space(height);
+                    let stage = paint_lyrics_stage(app, ui, lines, window_active, &motion, options);
+                    ui.add_space(height);
+                    // The collapsed card always follows. Unlike the expanded
+                    // view, it has no manual-scroll or shown-line state.
+                    if let Some(active_rect) = stage.active_rect {
+                        let viewport = ui.clip_rect();
+                        let wanted = viewport.top() + viewport.height() * options.active_fraction;
+                        let target = Rect::from_center_size(
+                            pos2(
+                                active_rect.center().x,
+                                active_rect.center().y + viewport.center().y - wanted,
+                            ),
+                            active_rect.size(),
+                        );
+                        ui.scroll_to_rect_animation(
+                            target,
+                            Some(Align::Center),
+                            egui::style::ScrollAnimation::none(),
+                        );
+                    }
+                });
+            request_word_repaint(
+                ui.ctx(),
+                &now,
+                &lyrics,
+                app.settings.lyrics_low_performance,
+                position_ms,
+            );
+        } else if let Some(message) = placeholder {
+            ui.painter().text(
+                pos2(stage_rect.left(), stage_rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                message,
+                theme::regular(13.0),
+                palette.secondary.gamma_multiply(0.72),
+            );
         }
-        if app.now_playing().is_some_and(|now| now.playing) {
-            ui.ctx()
-                .request_repaint_after(std::time::Duration::from_millis(200));
+        if padding.clicked() {
+            app.actions.push(Action::ToggleLyricsCard);
         }
         return;
     }
@@ -2631,25 +2994,6 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
     } else {
         egui::style::ScrollAnimation::none()
     };
-    let font_scale = (app.settings.lyrics_font_size as f32 / 100.0).clamp(0.7, 1.8);
-    let line_size = LINE_SIZE * font_scale;
-    let line_gap = LINE_GAP * font_scale * (f32::from(app.settings.lyrics_spacing) / 100.0);
-    let active_color = if app.settings.lyrics_cover_color && !app.settings.lyrics_simple_mode {
-        blend(playing_colors(app)[0], Color32::WHITE, 0.45)
-    } else {
-        Color32::WHITE
-    };
-    let active_alpha = if app.settings.lyrics_style == LyricsStyle::AppleMusic
-        || app.settings.lyrics_simple_mode
-    {
-        1.0
-    } else {
-        0.85
-    };
-    let word_fill = with_alpha(active_color, active_alpha);
-    let base_quiet = palette.text.gamma_multiply(0.35);
-    let base_sung = palette.text.gamma_multiply(0.48);
-    let base_active = palette.text.gamma_multiply(0.55);
     // Read the wheel before the scroll area consumes it: a hand scroll means
     // the reader wants to look elsewhere, so this frame must not snap back
     // to the sung line. The Follow button in the header picks the song up.
@@ -2681,119 +3025,23 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
                 );
             }
             ui.add_space(16.0);
-            // The scroll area's clip is the panel's inner edge; available
-            // width can include the scrollbar's lane, which put the ends of
-            // long lines under the margin.
-            let wrap = (ui.clip_rect().right() - ui.cursor().min.x).max(1.0);
-            for (index, line) in lyrics.lines.iter().enumerate() {
-                let is_active = active == Some(index);
-                let lit = ui.ctx().animate_bool_with_time(
-                    egui::Id::new("lyric-line").with(index),
-                    is_active,
-                    crate::motion::seconds(ui.ctx(), motion.line_fade),
-                );
-                let lit_eased = lit * lit * (3.0 - 2.0 * lit);
-                let distance = active.map_or(0, |active_idx| index.abs_diff(active_idx));
-                let focus = if app.settings.lyrics_distance_blur {
-                    motion.focus_factor(distance)
-                } else {
-                    1.0
-                };
-                let dim = focus * motion.dim;
-                let quiet = base_quiet.gamma_multiply(dim);
-                let sung = base_sung.gamma_multiply(dim);
-                let active_base = base_active.gamma_multiply(focus);
-                let resting = if line.at_ms.is_some_and(|at| at < position_ms) {
-                    sung
-                } else {
-                    quiet
-                };
-                let base = if is_active {
-                    active_base
-                } else {
-                    blend(resting, active_base, lit_eased)
-                };
-                let color = blend(resting, active_color, lit_eased);
-                let fill_strength = if is_active { 1.0 } else { lit_eased };
-                let rise = if motion.rise && is_active {
-                    (1.0 - lit_eased) * line_size * 0.12
-                } else {
-                    0.0
-                };
-                let look = motion.line(
-                    if is_active {
-                        theme::lyrics_sung(line_size)
-                    } else {
-                        theme::lyrics_quiet(line_size)
-                    },
-                    base,
-                    word_fill,
-                    wrap,
-                    rise,
-                );
-                let indent = if motion.duet_padding && line.opposite_aligned {
-                    (wrap * 0.07).min(56.0)
-                } else {
-                    0.0
-                };
-                if line.text.is_empty()
-                    && !line.background.is_empty()
-                    && background_pop(ui, line, position_ms, is_active, &look, index) <= 0.01
-                {
-                    continue;
-                }
-                let response =
-                    if line.text.is_empty() && line.background.is_empty() && lyrics.synced {
-                        paint_interlude(
-                            ui,
-                            is_active,
-                            color,
-                            look.glow,
-                            line_size,
-                            wrap,
-                            now.playing,
-                            line.at_ms.unwrap_or(0),
-                            line.end_ms.unwrap_or(0),
-                            position_ms,
-                        )
-                    } else if word_line(line) {
-                        paint_word_line(
-                            ui,
-                            line,
-                            position_ms,
-                            is_active,
-                            fill_strength,
-                            &look,
-                            index,
-                        )
-                        .0
-                    } else {
-                        let sense = if lyrics.synced {
-                            Sense::click()
-                        } else {
-                            Sense::hover()
-                        };
-                        paint_plain_line(ui, &line.text, &look, color, is_active, indent, sense)
-                    };
-                let response = if lyrics.synced {
-                    response.on_hover_cursor(egui::CursorIcon::PointingHand)
-                } else {
-                    response
-                };
-                crate::autoscroll::row(ui, &response);
-                let rect = response.rect;
-                if lyrics.synced
-                    && response.clicked()
-                    && let Some(at_ms) = line.at_ms
-                {
-                    let at = seek_target(at_ms, app.settings.lyrics_seek_fade_compensation);
-                    app.actions.push(Action::Seek(at));
-                    app.lyrics_following = true;
-                }
-                if is_active && following {
-                    show_sung_line(ui, rect, SUNG_LINE_AT, Some(animation));
-                }
-                ui.add_space(line_gap);
+            let stage = paint_lyrics_stage(
+                app,
+                ui,
+                &lyrics.lines,
+                active,
+                &motion,
+                StageOptions {
+                    active_fraction: SUNG_LINE_AT,
+                    line_budget: None,
+                    interactive: true,
+                },
+            );
+            for response in &stage.rows {
+                crate::autoscroll::row(ui, response);
+            }
+            if following && let Some(active_rect) = stage.active_rect {
+                show_sung_line(ui, active_rect, SUNG_LINE_AT, Some(animation));
             }
             if app.settings.lyrics_show_credits {
                 attribution(
@@ -2830,7 +3078,13 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
     if manual_scroll {
         app.lyrics_following = false;
     }
-    request_word_repaint(ui.ctx(), &now, &lyrics, app.settings.lyrics_low_performance);
+    request_word_repaint(
+        ui.ctx(),
+        &now,
+        &lyrics,
+        app.settings.lyrics_low_performance,
+        position_ms,
+    );
     app.lyrics_line_shown = Some(active);
 }
 
@@ -3425,7 +3679,6 @@ fn fullscreen_contents(app: &mut App, ui: &mut egui::Ui) {
         &app.settings,
         if app.milkdrop_behind_lyrics() { 48 } else { 36 },
     );
-    let hide_passed = app.settings.lyrics_hide_passed_lines || app.settings.lyrics_minimal_mode;
     let animation = if app.settings.lyrics_smooth_scroll {
         crate::motion::scroll(ui.ctx(), app.settings.lyrics_scroll_ms as f32 / 1000.0)
     } else {
@@ -3434,45 +3687,6 @@ fn fullscreen_contents(app: &mut App, ui: &mut egui::Ui) {
     let font_scale = (app.settings.lyrics_font_size as f32 / 100.0).clamp(0.7, 1.8);
     let size = (ui.available_width() * 0.052).clamp(31.0, 52.0) * font_scale;
     let active_at_fraction = (f32::from(app.settings.lyrics_position) / 100.0).clamp(0.15, 0.75);
-    let line_gap = 32.0 * (f32::from(app.settings.lyrics_spacing) / 100.0);
-    // The line being sung is pure white and grows, as Spicy Lyrics draws it;
-    // each line wraps for its full size all along, so growing can't rewrap
-    // its words. A moving picture asks more of the quiet lines than a still
-    // one.
-    let active_color = if app.settings.lyrics_cover_color && !app.settings.lyrics_simple_mode {
-        blend(playing_colors(app)[0], Color32::WHITE, 0.45)
-    } else {
-        Color32::WHITE
-    };
-    let active_alpha = if app.settings.lyrics_style == LyricsStyle::AppleMusic
-        || app.settings.lyrics_simple_mode
-    {
-        1.0
-    } else {
-        0.85
-    };
-    let word_fill = with_alpha(active_color, active_alpha);
-    let base_quiet = palette
-        .text
-        .gamma_multiply(if app.milkdrop_behind_lyrics() {
-            0.56
-        } else {
-            0.34
-        });
-    let base_sung = palette
-        .text
-        .gamma_multiply(if app.milkdrop_behind_lyrics() {
-            0.66
-        } else {
-            0.44
-        });
-    let base_active = palette
-        .text
-        .gamma_multiply(if app.milkdrop_behind_lyrics() {
-            0.66
-        } else {
-            0.55
-        });
     ui.spacing_mut().scroll.fade.strength = 0.0;
     ui.spacing_mut().scroll.fade.size = 0.0;
     egui::ScrollArea::vertical()
@@ -3500,166 +3714,20 @@ fn fullscreen_contents(app: &mut App, ui: &mut egui::Ui) {
                 (12.0, 60.0)
             };
             ui.add_space(padding);
-            for (index, line) in lyrics.lines.iter().enumerate() {
-                let is_active = active == Some(index);
-                let lit = ui.ctx().animate_bool_with_time(
-                    egui::Id::new("lyric-line").with(("fullscreen", &now.uri, index)),
-                    is_active,
-                    crate::motion::seconds(ui.ctx(), motion.line_fade),
-                );
-                let lit_eased = lit * lit * (3.0 - 2.0 * lit);
-                let passed = active.is_some_and(|active_idx| index < active_idx);
-                // A line that ends while one above it is still being sung
-                // stays on screen, dimmed, rather than disappearing early.
-                let overlapping = passed
-                    && app.settings.lyrics_keep_overlapping_lines
-                    && active
-                        .and_then(|active_idx| lyrics.lines.get(active_idx))
-                        .is_some_and(|current| {
-                            line.end_ms
-                                .zip(current.at_ms)
-                                .is_some_and(|(end, active_at)| end > active_at)
-                        });
-                // A minimal view lets a passed line fade right out, then
-                // stops giving it room, so only the song ahead is left.
-                if hide_passed && passed && !overlapping && lit < 0.02 {
-                    continue;
-                }
-                let distance = active.map_or(0, |active_idx| index.abs_diff(active_idx));
-                let focus = if app.settings.lyrics_distance_blur {
-                    motion.focus_factor(distance)
-                } else {
-                    1.0
-                };
-                let dim = focus * motion.dim;
-                let quiet = base_quiet.gamma_multiply(dim);
-                let sung = base_sung.gamma_multiply(dim);
-                let active_base = base_active.gamma_multiply(focus);
-                let resting = if line.at_ms.is_some_and(|at| at < position_ms) {
-                    sung
-                } else {
-                    quiet
-                };
-                let base = if is_active {
-                    active_base
-                } else {
-                    blend(resting, active_base, lit_eased)
-                };
-                let color = if lyrics.synced {
-                    blend(resting, active_color, lit_eased)
-                } else {
-                    palette.text
-                };
-                let fill_strength = if is_active { 1.0 } else { lit_eased };
-                let grown = if lyrics.synced {
-                    1.0 + (motion.active_growth - 1.0) * lit_eased
-                } else {
-                    1.0
-                };
-                let base_size = size.round();
-                let wrap = ui.available_width() / motion.active_growth.max(1.0);
-                let top = ui.cursor().top();
-                let center = top + base_size * 0.5;
-                let edge = ((center - viewport.top()).min(viewport.bottom() - center)
-                    / (base_size * 2.0))
-                    .clamp(0.0, 1.0);
-                let opacity = edge * edge * (3.0 - 2.0 * edge);
-                let rise = if motion.rise && is_active {
-                    (1.0 - lit_eased) * base_size * 0.14
-                } else {
-                    0.0
-                };
-                let look = motion.line(
-                    if is_active {
-                        theme::lyrics_sung(base_size)
-                    } else {
-                        theme::lyrics_quiet(base_size)
-                    },
-                    base,
-                    word_fill,
-                    wrap,
-                    rise,
-                );
-                let indent = if motion.duet_padding && line.opposite_aligned {
-                    (wrap * 0.07).min(56.0)
-                } else {
-                    0.0
-                };
-                if line.text.is_empty()
-                    && !line.background.is_empty()
-                    && background_pop(ui, line, position_ms, is_active, &look, index) <= 0.01
-                {
-                    continue;
-                }
-                let draw_line = |ui: &mut egui::Ui| {
-                    ui.multiply_opacity(opacity);
-                    if line.text.is_empty() && line.background.is_empty() && lyrics.synced {
-                        paint_interlude(
-                            ui,
-                            is_active,
-                            color,
-                            look.glow,
-                            base_size,
-                            wrap,
-                            now.playing,
-                            line.at_ms.unwrap_or(0),
-                            line.end_ms.unwrap_or(0),
-                            position_ms,
-                        )
-                    } else if word_line(line) {
-                        paint_word_line(
-                            ui,
-                            line,
-                            position_ms,
-                            is_active,
-                            fill_strength,
-                            &look,
-                            index,
-                        )
-                        .0
-                    } else {
-                        // Untimed words have nowhere to jump to, but a click on
-                        // them is still on a line, so it must not reach the
-                        // backdrop.
-                        paint_plain_line(
-                            ui,
-                            &line.text,
-                            &look,
-                            color,
-                            is_active,
-                            indent,
-                            Sense::click(),
-                        )
-                    }
-                };
-                let response = if (grown - 1.0).abs() > 0.005 {
-                    let origin = ui.cursor().min;
-                    let pivot_x = match look.align {
-                        LyricsAlign::Center => origin.x + wrap * 0.5,
-                        LyricsAlign::Right => origin.x + wrap,
-                        LyricsAlign::Left => origin.x,
-                    };
-                    let pivot = pos2(pivot_x, origin.y + base_size * 0.5);
-                    let transform =
-                        egui::emath::TSTransform::new(pivot.to_vec2() * (1.0 - grown), grown);
-                    ui.with_visual_transform(transform, draw_line).inner
-                } else {
-                    ui.scope(draw_line).inner
-                };
-                let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
-                let rect = response.rect;
-                if lyrics.synced
-                    && response.clicked()
-                    && let Some(at_ms) = line.at_ms
-                {
-                    let at = seek_target(at_ms, app.settings.lyrics_seek_fade_compensation);
-                    app.actions.push(Action::Seek(at));
-                    app.actions.push(Action::FollowLyrics);
-                }
-                if is_active && following {
-                    show_sung_line(ui, rect, active_at_fraction, Some(animation));
-                }
-                ui.add_space(line_gap);
+            let stage = paint_lyrics_stage(
+                app,
+                ui,
+                &lyrics.lines,
+                active,
+                &motion,
+                StageOptions {
+                    active_fraction: active_at_fraction,
+                    line_budget: None,
+                    interactive: true,
+                },
+            );
+            if following && let Some(active_rect) = stage.active_rect {
+                show_sung_line(ui, active_rect, active_at_fraction, Some(animation));
             }
             if app.settings.lyrics_show_credits {
                 attribution(
@@ -3708,18 +3776,23 @@ fn fullscreen_contents(app: &mut App, ui: &mut egui::Ui) {
                 next - now.position_ms,
             )));
     }
-    request_word_repaint(ui.ctx(), &now, &lyrics, app.settings.lyrics_low_performance);
+    request_word_repaint(
+        ui.ctx(),
+        &now,
+        &lyrics,
+        app.settings.lyrics_low_performance,
+        position_ms,
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         WordCluster, align_offset, boosted_motion, fill_edge, fullscreen_content_width, glow_level,
-        interlude_dot_radius, joined_text, joined_transliteration, line_preview_text,
-        merges_cluster, piece_emphasis, piece_filled, preferred_backdrop_art, seek_target,
-        word_swell,
+        interlude_dot_radius, joined_text, joined_transliteration, merges_cluster, piece_emphasis,
+        piece_filled, preferred_backdrop_art, seek_target, stage_window, word_swell,
     };
-    use crate::lyrics::{Line, Syllable};
+    use crate::lyrics::Syllable;
     use crate::settings::{LyricsAlign, SyllableMerge};
     use egui::{Color32, FontId, Rect, vec2};
 
@@ -4012,32 +4085,11 @@ mod tests {
     }
 
     #[test]
-    fn a_collapsed_lyrics_preview_reads_the_line_or_its_backing_vocals() {
-        let mut line = Line {
-            text: "  Flashing lights  ".into(),
-            ..Line::default()
-        };
-        assert_eq!(line_preview_text(&line), "Flashing lights");
-
-        line.text.clear();
-        line.background = vec![
-            Syllable {
-                text: "She ".into(),
-                ..Syllable::default()
-            },
-            Syllable {
-                text: "believes".into(),
-                ..Syllable::default()
-            },
-            Syllable {
-                text: " in".into(),
-                part_of_word: true,
-                ..Syllable::default()
-            },
-        ];
-        assert_eq!(line_preview_text(&line), "She believes in");
-
-        line.background.clear();
-        assert_eq!(line_preview_text(&line), "");
+    fn a_collapsed_stage_contains_five_lines_around_the_active_one() {
+        assert_eq!(stage_window(14, Some(6), 0.45, Some(5)), 4..9);
+        assert_eq!(stage_window(14, Some(0), 0.45, Some(5)), 0..5);
+        assert_eq!(stage_window(14, Some(13), 0.45, Some(5)), 9..14);
+        assert_eq!(stage_window(3, Some(1), 0.45, Some(5)), 0..3);
+        assert_eq!(stage_window(14, Some(6), 0.45, None), 0..14);
     }
 }
