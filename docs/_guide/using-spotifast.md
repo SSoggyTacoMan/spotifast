@@ -819,8 +819,9 @@ use your own Client ID, authorize it again in Settings as well.
 
 Choose the microphone button in the player bar, or press **L**, to open lyrics.
 A local file from a playlist shows the words in a `.lrc` file of the same name
-beside it, or in its own tags, and the cover in its tags; otherwise lyrics come
-from LRCLIB by its artist, title, album and length.
+beside it, or in its own tags, and the cover in its tags. Otherwise Spotifast
+asks the sources below in turn, and falls back to Spotify's own lyrics when
+the session is signed in, and to LRCLIB by artist, title, album and length.
 Synced lyrics follow the playing line automatically. Scroll to pause following,
 choose **Follow** to resume it, or choose a line to jump to that part of the song.
 
@@ -841,11 +842,15 @@ from logs and serialized settings when empty. Keep it out of source control,
 screenshots and any build you share. A build distributed to other people
 needs its own arrangement with Spicy Lyrics, such as an app template, rather
 than one shared key. Without a key, or when Spicy Lyrics has no sync for the
-song, Spotify and LRCLIB answer as before. Spicy answers are cached for 30
-days and then discarded. When Spicy Lyrics answers, the end of the panel
-credits the provider and the people who
-uploaded and made the sync, along with the song's writers; those credits are a
-condition of using the API.
+song, Spotifast asks four community catalogues in turn: the
+[AMLL TTML DB](https://github.com/amll-dev/amll-ttml-db), Unison, lrc.red and
+NetEase Cloud Music. Each can answer with word timing, line timing or plain
+words, and a miss or an outage moves on to the next. Spotify and LRCLIB answer
+when none of them has the song. Every source's answers are cached for 30 days
+and then discarded, and a temporary outage keeps the last answer readable.
+When a remote source answers, the end of the panel credits the provider and,
+where the source names them, the people who uploaded or made the sync, along
+with the song's writers.
 
 The expand button in the lyrics panel or at the right of the player bar, or
 **F** when no text field has focus, opens lyrics in full screen. By default it
@@ -865,9 +870,11 @@ settings; **All settings...** there opens the complete Lyrics section. The
 part stays adjustable afterwards: alignment, where the sung line sits, line
 spacing, dimming and focus, bounce and glow strength, the softness of the
 karaoke edge, line fades, rise and scale, smooth scrolling with an early lead,
-hiding sung lines, simple and minimal modes, joined words, duet padding,
-translations, credits, backdrop dimming, cover colours, and a low performance
-mode. Timing offset and line hold tune the moment a line switches.
+hiding sung lines, simple and minimal modes, merging a split word's syllables,
+duet padding, translations, credits, backdrop dimming, cover colours, a
+boosted word motion, seek fade compensation, refined credits that follow the
+last singer, keeping overlapping lines, and a low performance mode. Timing
+offset and line hold tune the moment a line switches.
 
 Press **V** in full screen lyrics, or click anywhere that isn't a line of
 lyrics or a control, to put MilkDrop behind the words instead of the cover's

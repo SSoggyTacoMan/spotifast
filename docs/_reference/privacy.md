@@ -54,13 +54,13 @@ Spotifast connects only to the services below.
   service, which answers with the account's feed of new releases; when it
   cannot, the Web API is asked for the followed artists and their latest
   albums. The shelf is saved in the same Home cache.
-- **LRCLIB.** When the lyrics panel is open and neither Spotify nor, for a
-  local file, the file itself has lyrics for the song, Spotifast sends its
-  artist, title, album and length to [lrclib.net](https://lrclib.net).
-  Nothing identifying you is included. Short overloads are retried within a
-  20-second lookup budget, respecting `Retry-After`; search can recover when
-  the exact lookup is temporarily unavailable. A failed lookup can use older
-  cached lyrics, but never caches an outage as a missing transcription.
+- **LRCLIB.** When the lyrics panel is open and no other source has lyrics for
+  the song, Spotifast sends its artist, title, album and length to
+  [lrclib.net](https://lrclib.net). Nothing identifying you is included. Short
+  overloads are retried within a 20-second lookup budget, respecting
+  `Retry-After`; search can recover when the exact lookup is temporarily
+  unavailable. A failed lookup can use older cached lyrics, but never caches
+  an outage as a missing transcription.
 - **Spicy Lyrics.** When the lyrics panel is open, a local file has no words,
   and a key is configured in Settings or via `SPICY_LYRICS_KEY` /
   `SPICY_LYRICS_SECRET_KEY`, Spotifast sends the Spotify track id to
@@ -68,7 +68,21 @@ Spotifast connects only to the services below.
   The key identifies your Spicy Lyrics account; no other account data is sent.
   The key is never written to log files and is omitted from settings export
   when empty. Answers are cached for 30 days, then discarded. Without a key,
-  or when the API has no sync for the song, Spotify and LRCLIB answer instead.
+  or when the API has no sync for the song, the catalogues below answer.
+- **AMLL TTML DB.** The track's artist and title go to
+  [api.amll.dev](https://api.amll.dev), which returns community TTML. Nothing
+  identifying you is included. Answers are cached for 30 days.
+- **Unison.** The artist, title and a search phrase go to
+  [unison.boidu.dev](https://unison.boidu.dev). Its answer includes the
+  submitter's display name and, when they have one, their curator page link.
+  Nothing identifying you is included. Answers are cached for 30 days.
+- **lrc.red.** The title and artist go to [lrc.red](https://lrc.red), followed
+  by a request for the matched recording by ISRC. Nothing identifying you is
+  included. Answers are cached for 30 days.
+- **NetEase Cloud Music.** A search phrase built from the artist and title,
+  then the matched song id, go to
+  [music.163.com](https://music.163.com). Nothing identifying you is
+  included. Answers are cached for 30 days.
 - **GitHub.** Once a day, Spotifast asks GitHub for the latest release. You
   can turn automatic checks off in Settings. Downloading an update, and the
   first opening of MilkDrop, also fetch files from GitHub. No Spotify data is

@@ -450,7 +450,12 @@ main fields are:
 | `lyrics_simple_mode` | `false` | Drop glow, bounce, rise and ambient colour |
 | `lyrics_minimal_mode` | `false` | Keep only the sung line and the lines ahead |
 | `lyrics_low_performance` | `false` | Fewer repaint frames and lighter glow |
-| `lyrics_join_words` | `false` | Fill each word evenly from its first syllable to its last |
+| `lyrics_syllable_merge` | `full` | Fill a split word as one: `off`, `full`, `steady` (only steadily sung words), or `held` (only words held long enough). Older files' `lyrics_join_words` is read as `full` or `off` |
+| `lyrics_word_motion_boost` | `false` | Multiply how far sung words grow and lift |
+| `lyrics_seek_fade_compensation` | `false` | Start a little before a line that is tapped, so the player's fade-in does not swallow its first word |
+| `lyrics_refined_credits` | `false` | Show the credits as quiet type under the last line, dim until the song is sung |
+| `lyrics_credits_follow_last_line` | `false` | Put the credits on the side of the last duet line |
+| `lyrics_keep_overlapping_lines` | `true` | Keep a line that ends while the one above it is still being sung |
 | `lyrics_duet_padding` | `true` | Step duet lines in from the singer's side |
 | `lyrics_show_translations` | `true` | Show translations and romanisations under the words |
 | `lyrics_show_credits` | `true` | Show the lyrics source and credits at the end |

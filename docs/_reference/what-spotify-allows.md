@@ -210,7 +210,7 @@ librespot provides:
   from the file: the picture in its tags (an MP3's ID3 `APIC` frame or a
   FLAC `PICTURE` block), and the words in a `.lrc` file of the same name
   beside it or in its tags (ID3 `USLT` or a `LYRICS` comment), before
-  asking LRCLIB
+  asking the community catalogues and LRCLIB
   ([issue #1001](https://github.com/crmne/spotifast/issues/1001)).
 
 Spotify Premium is required. librespot cannot play audio with a free account.
