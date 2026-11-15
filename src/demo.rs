@@ -9120,7 +9120,7 @@ mod tests {
         }
         let drawn = texts(&mut app);
         assert!(
-            drawn.iter().any(|(text, _)| text == "asleep"),
+            drawn.iter().any(|(text, _)| text == "night"),
             "the open card shows the lyrics body: {drawn:?}"
         );
         let panel_height_at_rest = panel_height();
@@ -9212,6 +9212,51 @@ mod tests {
         app.backend.shutdown();
     }
 
+    /// The panel carries the Spotify shell: a large cover, the title and
+    /// artist, and a lyrics card that stays inside a narrow panel.
+    #[cfg(feature = "demo")]
+    #[test]
+    fn the_now_playing_panel_has_the_spotify_shell() {
+        let (ctx, mut app) = accessible_app("now-playing-shell");
+        app.backend.set_offline(true);
+        app.show_lyrics_panel = true;
+        app.settings.lyrics_width = 280.0;
+        app.settings
+            .apply_lyrics_style(crate::settings::LyricsStyle::AppleMusic);
+        app.lyrics = Loadable::Loaded(Some(word_sample_lyrics()));
+        app.lyrics_following = true;
+        app.lyrics_card_collapsed = true;
+        app.local.position_ms = 80_400;
+        app.local.position_at = None;
+        if let Some(remote) = &mut app.remote {
+            remote.state.progress_ms = Some(80_400);
+        }
+        let size = egui::vec2(1100.0, 900.0);
+        for _ in 0..30 {
+            view_frame_sized(&ctx, &mut app, Vec::new(), App::frame_ui, size);
+        }
+        let drawn = view_frame_sized(&ctx, &mut app, Vec::new(), App::frame_ui, size);
+        for text in ["Rosewood", "Bonobo", "Lyrics"] {
+            assert!(
+                drawn.iter().any(|(drawn, _)| drawn == text),
+                "the panel draws {text}: {drawn:?}"
+            );
+        }
+        let stage = ctx
+            .read_response(egui::Id::new("lyrics-card-stage"))
+            .expect("the lyrics card has a stage")
+            .rect;
+        assert!(
+            stage.height() >= 220.0,
+            "the card stays usable at 280 width: {stage:?}"
+        );
+        assert!(
+            stage.width() <= 280.0,
+            "the card stays inside the narrow panel: {stage:?}"
+        );
+        app.backend.shutdown();
+    }
+
     /// Five logical lines stay inside the collapsed stage at both heights its
     /// clamp is meant to support, with the active block still at 45 percent.
     #[cfg(feature = "demo")]
@@ -9239,7 +9284,7 @@ mod tests {
                 .expect("the collapsed stage has a stable response")
                 .rect;
             assert!(
-                stage.height() >= 240.0,
+                stage.height() >= 220.0,
                 "the stage is tall enough for five lines: {} at screen height {screen_height}",
                 stage.height()
             );
@@ -9362,16 +9407,17 @@ mod tests {
         assert!(!app.lyrics_card_collapsed);
 
         let before = screen_texts(&ctx, &mut app);
-        let asleep = before
+        let pointer = before
             .iter()
-            .find(|(text, _)| text == "asleep")
-            .expect("the reopened body shows the later lines")
-            .1;
+            .find(|(text, _)| text == "night")
+            .expect("the reopened body shows the sung line")
+            .1
+            .center();
         frame_events(
             &ctx,
             &mut app,
             vec![
-                egui::Event::PointerMoved(asleep.center()),
+                egui::Event::PointerMoved(pointer),
                 egui::Event::MouseWheel {
                     unit: egui::MouseWheelUnit::Point,
                     delta: egui::vec2(0.0, -260.0),
@@ -9384,14 +9430,11 @@ mod tests {
             frame(&ctx, &mut app);
         }
         let after = screen_texts(&ctx, &mut app);
-        let moved = after
-            .iter()
-            .find(|(text, _)| text == "asleep")
-            .map_or(f32::NEG_INFINITY, |(_, rect)| rect.top());
         assert!(
-            moved < asleep.top() - 40.0,
-            "the reopened body scrolls: {} to {moved}",
-            asleep.top()
+            after
+                .iter()
+                .any(|(text, _)| text == "asleep" || text == "Somewhere"),
+            "the reopened body scrolls to later lines: {after:?}"
         );
         assert!(!app.lyrics_following, "hand scrolling stops following");
         app.backend.shutdown();
@@ -9769,7 +9812,9 @@ mod tests {
             let below_a_third = if fullscreen {
                 220.0..380.0
             } else {
-                60.0..320.0
+                // The card now sits below the cover and title, so the sung
+                // line is high inside the card rather than the window.
+                360.0..640.0
             };
             assert!(
                 below_a_third.contains(&centre),

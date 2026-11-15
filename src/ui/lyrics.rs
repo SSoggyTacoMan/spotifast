@@ -1873,7 +1873,6 @@ pub fn side_panel(app: &mut App, ui: &mut egui::Ui) {
             let locale = app.locale;
             let loaded = matches!(&app.lyrics, Loadable::Loaded(Some(_)));
             let mut close = false;
-            let mut fullscreen = false;
             let mut follow = false;
             // The buttons are measured first so the title truncates into what
             // is left instead of running under them at the narrowest panel.
@@ -1897,24 +1896,6 @@ pub fn side_panel(app: &mut App, ui: &mut egui::Ui) {
                         &gettext(locale, "Close"),
                     )
                     .clicked();
-                    fullscreen = theme::icon_button(
-                        ui,
-                        Icon::Expand,
-                        18.0,
-                        palette.secondary,
-                        palette.text,
-                        &gettext(locale, "Full screen lyrics"),
-                    )
-                    .clicked();
-                    let settings_btn = theme::icon_button(
-                        ui,
-                        Icon::Settings,
-                        18.0,
-                        palette.secondary,
-                        palette.text,
-                        &gettext(locale, "Lyrics settings"),
-                    );
-                    lyrics_settings_popup(app, &settings_btn, &palette, false);
                     if loaded
                         && !app.lyrics_following
                         && theme::pill_button(
@@ -1931,9 +1912,6 @@ pub fn side_panel(app: &mut App, ui: &mut egui::Ui) {
             );
             if close {
                 app.actions.push(Action::ToggleLyricsPanel);
-            }
-            if fullscreen {
-                app.actions.push(Action::SetLyricsFullscreen(true));
             }
             if follow {
                 app.lyrics_following = true;
@@ -2762,6 +2740,34 @@ fn paint_stage_fade(painter: &egui::Painter, rect: Rect) {
     }
 }
 
+/// A circular icon button for the lyrics card header.
+fn round_icon_button(
+    ui: &mut egui::Ui,
+    icon: Icon,
+    palette: &theme::Palette,
+    tooltip: &str,
+) -> egui::Response {
+    let size = 30.0;
+    let (rect, response) = ui.allocate_exact_size(vec2(size, size), Sense::click());
+    if response.hovered() {
+        ui.painter()
+            .circle_filled(rect.center(), size * 0.5, Color32::from_white_alpha(12));
+    }
+    ui.painter().circle_stroke(
+        rect.center(),
+        size * 0.5 - 0.5,
+        egui::Stroke::new(1.0, Color32::from_white_alpha(26)),
+    );
+    theme::paint_icon(
+        ui,
+        icon,
+        Rect::from_center_size(rect.center(), vec2(14.0, 14.0)),
+        14.0,
+        palette.text,
+    );
+    response.on_hover_text(tooltip)
+}
+
 /// The playback context, the cover stage, the track metadata with its save
 /// action, and the collapsible lyrics card.
 fn now_playing_stage(app: &mut App, ui: &mut egui::Ui) {
@@ -2795,77 +2801,109 @@ fn now_playing_stage(app: &mut App, ui: &mut egui::Ui) {
         ui.add_space(8.0);
     }
 
-    // The side panel is for words, not an art viewer: a compact row keeps
-    // the lyrics high and leaves the blurred backdrop as the stage.
+    // A large cover, like Spotify's Now playing sheet, then the title and
+    // artist on one row with the saved state.
+    let width = ui.available_width();
+    let art_side = if width < 320.0 {
+        (width * 0.66).clamp(96.0, 220.0)
+    } else {
+        width.min(ui.available_height() * 0.45).clamp(96.0, 340.0)
+    };
+    let (art_slot, _) = ui.allocate_exact_size(
+        vec2(ui.available_width().max(1.0), art_side),
+        Sense::hover(),
+    );
+    let art_rect = Rect::from_center_size(art_slot.center(), vec2(art_side, art_side));
+    widgets::playing_cover(
+        ui,
+        &palette,
+        app.backend.art(),
+        "lyrics-now-playing",
+        app.small_art(&now, art_side),
+        art_rect,
+        14.0,
+    );
+    ui.add_space(10.0);
+
     egui::Sides::new().shrink_left().spacing(8.0).show(
         ui,
         |ui| {
-            ui.horizontal(|ui| {
-                let size = 56.0;
-                let (rect, _) = ui.allocate_exact_size(vec2(size, size), Sense::hover());
-                widgets::playing_cover(
-                    ui,
-                    &palette,
-                    app.backend.art(),
-                    "lyrics-now-playing",
-                    app.small_art(&now, size),
-                    rect,
-                    theme::RADIUS as f32,
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 3.0;
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(&now.title)
+                            .font(theme::bold(21.0))
+                            .color(palette.text),
+                    )
+                    .truncate(),
                 );
-                ui.add_space(6.0);
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 2.0;
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(&now.title)
-                                .font(theme::bold(15.0))
-                                .color(palette.text),
-                        )
-                        .truncate(),
-                    );
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(&now.subtitle)
-                                .font(theme::regular(12.5))
-                                .color(palette.secondary),
-                        )
-                        .truncate(),
-                    );
-                });
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(&now.subtitle)
+                            .font(theme::regular(13.0))
+                            .color(palette.secondary),
+                    )
+                    .truncate(),
+                );
             });
         },
         |ui| {
             if !now.is_episode {
-                let (icon, color) = if saved {
-                    (Icon::HeartFilled, palette.accent)
-                } else {
-                    (Icon::Heart, palette.secondary)
-                };
-                if theme::icon_button(ui, icon, 18.0, color, palette.text, &save_tooltip).clicked()
+                if saved {
+                    let (rect, response) = ui.allocate_exact_size(vec2(24.0, 24.0), Sense::click());
+                    ui.painter()
+                        .circle_filled(rect.center(), 12.0, palette.accent);
+                    theme::paint_icon(
+                        ui,
+                        Icon::Check,
+                        Rect::from_center_size(rect.center(), vec2(14.0, 14.0)),
+                        14.0,
+                        palette.on_accent,
+                    );
+                    if response.on_hover_text(save_tooltip.as_ref()).clicked() {
+                        toggle_save = true;
+                    }
+                } else if theme::icon_button(
+                    ui,
+                    Icon::Heart,
+                    20.0,
+                    palette.secondary,
+                    palette.text,
+                    &save_tooltip,
+                )
+                .clicked()
                 {
                     toggle_save = true;
                 }
             }
         },
     );
-    ui.add_space(6.0);
-
     if toggle_save {
         app.actions.push(Action::ToggleSaved(now.uri));
     }
+    ui.add_space(10.0);
 
     let locale = app.locale;
     let collapsed = app.lyrics_card_collapsed;
 
+    let motion = MotionLook::from_settings(&app.settings, 22);
+    let card = motion.card;
+    // The card wraps the header and the lyrics stage. Its shapes are reserved
+    // now so it sits behind both without a second container.
+    let card_fill = ui.painter().add(egui::Shape::Noop);
+    let card_stroke = ui.painter().add(egui::Shape::Noop);
+    let card_top = ui.cursor().top() - 10.0;
+
     // One stable, full-width click target. It does not move when the card
     // opens or closes, so a click can never land on a shrinking preview.
     let (header_rect, header_response) =
-        ui.allocate_exact_size(vec2(ui.available_width().max(1.0), 26.0), Sense::click());
+        ui.allocate_exact_size(vec2(ui.available_width().max(1.0), 34.0), Sense::click());
     if header_response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         ui.painter().rect_filled(
             header_rect,
-            CornerRadius::same(8),
+            CornerRadius::same(10),
             Color32::from_white_alpha(6),
         );
     }
@@ -2874,34 +2912,77 @@ fn now_playing_stage(app: &mut App, ui: &mut egui::Ui) {
     } else {
         Icon::ChevronUp
     };
-    theme::paint_icon(
-        ui,
-        chevron,
-        Rect::from_center_size(
-            pos2(header_rect.left() + 12.0, header_rect.center().y),
-            vec2(14.0, 14.0),
-        ),
-        14.0,
-        palette.secondary,
-    );
-    let mut header_ui = ui.new_child(
+    let mut title_ui = ui.new_child(
         UiBuilder::new()
             .max_rect(header_rect)
             .layout(Layout::left_to_right(Align::Center)),
     );
-    header_ui.add_space(24.0);
+    title_ui.add_space(12.0);
     theme::text(
-        &mut header_ui,
+        &mut title_ui,
         gettext(locale, "Lyrics"),
-        theme::semibold(13.0),
+        theme::semibold(15.0),
         palette.text,
     );
-    if header_response.clicked() {
+
+    let mut buttons = ui.new_child(
+        UiBuilder::new()
+            .max_rect(header_rect)
+            .layout(Layout::right_to_left(Align::Center)),
+    );
+    buttons.add_space(12.0);
+    let chevron_button = round_icon_button(&mut buttons, chevron, &palette, "Lyrics");
+    buttons.add_space(6.0);
+    let expand_button = round_icon_button(
+        &mut buttons,
+        Icon::Expand,
+        &palette,
+        &gettext(locale, "Full screen lyrics"),
+    );
+    buttons.add_space(6.0);
+    let settings_button = round_icon_button(
+        &mut buttons,
+        Icon::Settings,
+        &palette,
+        &gettext(locale, "Lyrics settings"),
+    );
+    lyrics_settings_popup(app, &settings_button, &palette, false);
+
+    let button_clicked =
+        chevron_button.clicked() || expand_button.clicked() || settings_button.clicked();
+    if chevron_button.clicked() || (header_response.clicked() && !button_clicked) {
         app.actions.push(Action::ToggleLyricsCard);
     }
+    if expand_button.clicked() {
+        app.actions.push(Action::SetLyricsFullscreen(true));
+    }
+
+    let paint_card = |ui: &egui::Ui| {
+        if !card {
+            return;
+        }
+        let bottom = ui.cursor().top() + 8.0;
+        let rect = Rect::from_min_max(
+            pos2(ui.max_rect().left() + 2.0, card_top),
+            pos2(ui.max_rect().right() - 2.0, bottom),
+        );
+        ui.painter().set(
+            card_fill,
+            egui::Shape::rect_filled(rect, CornerRadius::same(18), Color32::from_white_alpha(14)),
+        );
+        ui.painter().set(
+            card_stroke,
+            egui::Shape::rect_stroke(
+                rect,
+                CornerRadius::same(18),
+                egui::Stroke::new(1.0, Color32::from_white_alpha(20)),
+                egui::StrokeKind::Inside,
+            ),
+        );
+    };
 
     if collapsed {
-        let height = (ui.available_height() * 0.52).clamp(180.0, 320.0);
+        let height = (ui.available_height() - 16.0).clamp(180.0, 420.0);
         let stage_size = vec2(ui.available_width().max(1.0), height);
         let (stage_rect, _) = ui.allocate_exact_size(stage_size, Sense::hover());
         let padding = ui
@@ -2911,21 +2992,6 @@ fn now_playing_stage(app: &mut App, ui: &mut egui::Ui) {
                 Sense::click(),
             )
             .on_hover_cursor(egui::CursorIcon::PointingHand);
-
-        let motion = MotionLook::from_settings(&app.settings, 22);
-        if motion.card {
-            ui.painter().rect_filled(
-                stage_rect,
-                CornerRadius::same(18),
-                Color32::from_white_alpha(14),
-            );
-            ui.painter().rect_stroke(
-                stage_rect,
-                CornerRadius::same(18),
-                egui::Stroke::new(1.0, Color32::from_white_alpha(20)),
-                egui::StrokeKind::Inside,
-            );
-        }
 
         let mut placeholder = None;
         let display = match &app.lyrics {
@@ -3036,6 +3102,7 @@ fn now_playing_stage(app: &mut App, ui: &mut egui::Ui) {
         if padding.clicked() {
             app.actions.push(Action::ToggleLyricsCard);
         }
+        paint_card(ui);
         return;
     }
 
@@ -3050,6 +3117,7 @@ fn now_playing_stage(app: &mut App, ui: &mut egui::Ui) {
         contents(app, &mut body);
         ui.advance_cursor_after_rect(body_rect);
     }
+    paint_card(ui);
 }
 
 fn contents(app: &mut App, ui: &mut egui::Ui) {
