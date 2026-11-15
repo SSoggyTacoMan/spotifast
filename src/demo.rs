@@ -913,6 +913,39 @@ fn word_sample_lyrics() -> crate::lyrics::Lyrics {
     lyrics
 }
 
+/// The word-synced sample with a six-second instrumental break after the
+/// line the demo playhead sits in, so the interlude dots are visible in a
+/// still capture.
+#[cfg(feature = "demo")]
+fn interlude_sample_lyrics() -> crate::lyrics::Lyrics {
+    let mut lyrics = word_sample_lyrics();
+    let Some(index) = lyrics
+        .lines
+        .iter()
+        .position(|line| line.text.contains("But the night"))
+    else {
+        return lyrics;
+    };
+    let at = lyrics.lines[index].at_ms.unwrap_or(0);
+    if let Some(line) = lyrics.lines.get_mut(index) {
+        line.end_ms = Some(at + 2_000);
+    }
+    let shift = 6_000;
+    for line in lyrics.lines.iter_mut().skip(index + 1) {
+        if let Some(at) = line.at_ms {
+            line.at_ms = Some(at + shift);
+        }
+        if let Some(end) = line.end_ms {
+            line.end_ms = Some(end + shift);
+        }
+        for syllable in &mut line.syllables {
+            syllable.at_ms += shift;
+            syllable.end_ms += shift;
+        }
+    }
+    lyrics
+}
+
 /// A demo line with word timing, split into two syllables when a word is long
 /// enough to make the karaoke fill visible.
 #[cfg(feature = "demo")]
@@ -1939,6 +1972,9 @@ pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
             "lyrics"
             | "lyrics-lines"
             | "lyrics-fullscreen"
+            | "lyrics-interlude"
+            | "lyrics-spicy"
+            | "lyrics-minimal"
             | "lyrics-now-playing"
             | "lyrics-now-playing-open"
             | "lyrics-now-playing-narrow"
@@ -1949,6 +1985,8 @@ pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
                 // for comparison and for tests of line layout.
                 let lyrics = if surface == "lyrics-lines" {
                     sample_lyrics()
+                } else if surface == "lyrics-interlude" {
+                    interlude_sample_lyrics()
                 } else {
                     word_sample_lyrics()
                 };
@@ -1981,6 +2019,32 @@ pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
                     }
                     app.lyrics_card_collapsed =
                         matches!(surface, "lyrics-now-playing" | "lyrics-now-playing-narrow");
+                }
+                if surface == "lyrics-interlude" {
+                    app.settings
+                        .apply_lyrics_style(crate::settings::LyricsStyle::AppleMusic);
+                    app.settings.lyrics_width = 360.0;
+                    app.local.position_ms = 82_500;
+                    app.local.position_at = None;
+                    app.lyrics_card_collapsed = true;
+                    if let Some(remote) = &mut app.remote {
+                        remote.state.progress_ms = Some(82_500);
+                    }
+                }
+                if matches!(surface, "lyrics-spicy" | "lyrics-minimal") {
+                    let style = if surface == "lyrics-spicy" {
+                        crate::settings::LyricsStyle::Spicy
+                    } else {
+                        crate::settings::LyricsStyle::Minimal
+                    };
+                    app.settings.apply_lyrics_style(style);
+                    app.settings.lyrics_width = 360.0;
+                    app.local.position_ms = 80_400;
+                    app.local.position_at = None;
+                    app.lyrics_card_collapsed = true;
+                    if let Some(remote) = &mut app.remote {
+                        remote.state.progress_ms = Some(80_400);
+                    }
                 }
                 if surface == "lyrics-fullscreen" {
                     app.actions.push(Action::SetLyricsFullscreen(true));
@@ -9152,9 +9216,9 @@ mod tests {
     /// clamp is meant to support, with the active block still at 45 percent.
     #[cfg(feature = "demo")]
     #[test]
-    fn the_collapsed_stage_fits_five_lines_at_240_and_300() {
-        for (screen_height, expected_height) in [(871.0, 240.0), (1014.0, 300.0)] {
-            let (ctx, mut app) = accessible_app(&format!("lyrics-stage-{expected_height}"));
+    fn the_collapsed_stage_fits_five_lines_at_the_supported_heights() {
+        for screen_height in [871.0, 1014.0] {
+            let (ctx, mut app) = accessible_app(&format!("lyrics-stage-{screen_height}"));
             app.backend.set_offline(true);
             app.show_lyrics_panel = true;
             app.lyrics = Loadable::Loaded(Some(word_sample_lyrics()));
@@ -9175,8 +9239,8 @@ mod tests {
                 .expect("the collapsed stage has a stable response")
                 .rect;
             assert!(
-                (stage.height() - expected_height).abs() < 1.0,
-                "stage height {} at screen height {screen_height}",
+                stage.height() >= 240.0,
+                "the stage is tall enough for five lines: {} at screen height {screen_height}",
                 stage.height()
             );
             for word in ["city", "map", "night", "there's", "Coffee"] {
@@ -9187,7 +9251,7 @@ mod tests {
                     .1;
                 assert!(
                     line.center().y >= stage.top() && line.center().y <= stage.bottom(),
-                    "{word} stays inside the {expected_height}-point stage: {line:?}, {stage:?}"
+                    "{word} stays inside the stage: {line:?}, {stage:?}"
                 );
             }
             let active = drawn

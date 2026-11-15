@@ -219,7 +219,7 @@ impl LyricsStyle {
     pub fn active_growth(self) -> f32 {
         match self {
             Self::Spicy => 1.10,
-            Self::AppleMusic => 1.045,
+            Self::AppleMusic => 1.0,
             Self::Minimal => 1.0,
         }
     }
@@ -952,7 +952,7 @@ impl Settings {
                 self.lyrics_glow_strength = 55;
                 self.lyrics_distance_blur = true;
                 self.lyrics_fade_width = 70;
-                self.lyrics_line_fade_ms = 500;
+                self.lyrics_line_fade_ms = 700;
                 self.lyrics_early_scroll_ms = 0;
                 self.lyrics_scroll_ms = 550;
                 self.lyrics_smooth_scroll = true;

@@ -265,6 +265,18 @@ struct MotionLook {
     show_background: bool,
     show_translation: bool,
     background_pop: bool,
+    /// The Apple Music card's soft highlight behind the active line.
+    pill: bool,
+    /// The rounded surface behind the stage.
+    card: bool,
+    /// The refined interlude dots rather than the Spicy ones.
+    dots: bool,
+    inactive_scale: f32,
+    inactive_alpha: f32,
+    /// How far the active line rises, in em, while it lights up.
+    word_lift: f32,
+    /// The Spotify-style profile, which also owns its typography.
+    apple: bool,
 }
 
 impl MotionLook {
@@ -279,6 +291,7 @@ impl MotionLook {
         let alpha = (f32::from(glow_alpha) * glow_strength)
             .round()
             .clamp(0.0, 255.0) as u8;
+        let apple = settings.lyrics_style == LyricsStyle::AppleMusic;
         Self {
             bounce: if settings.lyrics_bounce && !simple {
                 f32::from(settings.lyrics_bounce_strength) / 100.0
@@ -309,6 +322,13 @@ impl MotionLook {
             show_background: !settings.lyrics_minimal_mode,
             show_translation: settings.lyrics_show_translations && !settings.lyrics_minimal_mode,
             background_pop: settings.lyrics_background_pop,
+            pill: apple,
+            card: apple,
+            dots: apple,
+            inactive_scale: if apple { 0.98 } else { 1.0 },
+            inactive_alpha: if apple { 0.55 } else { 1.0 },
+            word_lift: if apple { 0.055 } else { 0.0 },
+            apple,
         }
     }
 
@@ -340,6 +360,10 @@ impl MotionLook {
             show_translation: self.show_translation,
             glow_dense: !self.low_performance,
             background_pop: self.background_pop,
+            pill: self.pill,
+            pill_fill: Color32::from_white_alpha(36),
+            pill_radius: 12,
+            pill_pad: egui::vec2(14.0, 8.0),
         }
     }
 }
@@ -364,6 +388,10 @@ struct LineLook {
     show_translation: bool,
     glow_dense: bool,
     background_pop: bool,
+    pill: bool,
+    pill_fill: Color32,
+    pill_radius: u8,
+    pill_pad: egui::Vec2,
 }
 
 /// One syllable placed inside a word.
@@ -968,6 +996,7 @@ fn paint_word_line(
         return (response, layout.height);
     }
     let painter = ui.painter();
+    let pill_shape = (active && look.pill).then(|| painter.add(egui::Shape::Noop));
     let bounds = Rect::from_min_max(
         rect.min - vec2(8.0, 8.0),
         rect.max + vec2(8.0, look.rise.max(0.0) + 8.0),
@@ -1265,6 +1294,30 @@ fn paint_word_line(
             look.base,
         );
     }
+    if let Some(index) = pill_shape {
+        let mut text_min = egui::pos2(f32::INFINITY, f32::INFINITY);
+        let mut text_max = egui::pos2(f32::NEG_INFINITY, f32::NEG_INFINITY);
+        for cluster in &layout.clusters {
+            for piece in &cluster.pieces {
+                let at = rect.min + piece.pos.to_vec2() + vec2(0.0, look.rise);
+                text_min.x = text_min.x.min(at.x);
+                text_min.y = text_min.y.min(at.y);
+                text_max.x = text_max.x.max(at.x + piece.galley.size().x);
+                text_max.y = text_max.y.max(at.y + piece.galley.size().y);
+            }
+        }
+        if text_min.x.is_finite() {
+            let pill = Rect::from_min_max(text_min, text_max).expand2(look.pill_pad);
+            painter.set(
+                index,
+                egui::Shape::rect_filled(
+                    pill,
+                    CornerRadius::same(look.pill_radius),
+                    look.pill_fill,
+                ),
+            );
+        }
+    }
     (response, layout.height)
 }
 
@@ -1321,7 +1374,9 @@ fn paint_plain_line(
         return response;
     }
     let painter = ui.painter();
-    let width = galley.size().x;
+    let pill_shape = (active && look.pill).then(|| painter.add(egui::Shape::Noop));
+    let text_size = galley.size();
+    let width = text_size.x;
     let left = if crate::bidi::is_rtl(text) {
         match look.align {
             LyricsAlign::Left => rect.right() - indent - width,
@@ -1337,6 +1392,13 @@ fn paint_plain_line(
         paint_glow(painter, pos, &galley, look.glow, radius, look.glow_dense);
     }
     painter.galley(pos, galley, color);
+    if let Some(index) = pill_shape {
+        let pill = Rect::from_min_size(pos, text_size).expand2(look.pill_pad);
+        painter.set(
+            index,
+            egui::Shape::rect_filled(pill, CornerRadius::same(look.pill_radius), look.pill_fill),
+        );
+    }
     response
 }
 
@@ -1360,6 +1422,7 @@ fn paint_interlude(
     start_ms: u32,
     end_ms: u32,
     position_ms: u32,
+    refined: bool,
 ) -> egui::Response {
     let height = size * 1.2;
     let (rect, response) = ui.allocate_exact_size(vec2(wrap.max(1.0), height), Sense::click());
@@ -1367,8 +1430,16 @@ fn paint_interlude(
         return response;
     }
     let painter = ui.painter();
-    let base_radius = interlude_dot_radius(size);
-    let gap = base_radius * 3.2;
+    let base_radius = if refined {
+        (size * 0.13).clamp(3.5, 8.0)
+    } else {
+        interlude_dot_radius(size)
+    };
+    let gap = if refined {
+        base_radius * 2.6
+    } else {
+        base_radius * 3.2
+    };
     let time = ui.input(|input| input.time) as f32;
     let dot_times =
         (end_ms > start_ms).then(|| crate::lyrics::interlude_dot_times(start_ms, end_ms));
@@ -1391,7 +1462,11 @@ fn paint_interlude(
         let (dot_scale, dot_lift, dot_alpha, dot_glowing) = if let Some(times) = dot_times {
             let (d_start, d_end) = times[index];
             if !active || position_ms < d_start {
-                (0.85, 0.0, 0.35, false)
+                if refined {
+                    (0.75, 0.0, 0.30, false)
+                } else {
+                    (0.85, 0.0, 0.35, false)
+                }
             } else {
                 let p = if position_ms < d_end {
                     crate::lyrics::span_progress(d_start, d_end, position_ms)
@@ -1399,17 +1474,29 @@ fn paint_interlude(
                     1.0
                 };
                 let fill = 0.5 - 0.5 * (std::f32::consts::PI * p).cos();
-                let scale = if p < 0.6 {
-                    0.94 + 0.08 * smoothstep01(p / 0.6)
+                let (scale, lift) = if refined {
+                    (
+                        0.75 + 0.30 * smoothstep01(p),
+                        -size * 0.04 * smoothstep01((p / 0.7).min(1.0)),
+                    )
                 } else {
-                    1.02 - 0.02 * smoothstep01((p - 0.6) / 0.4)
+                    let scale = if p < 0.6 {
+                        0.94 + 0.08 * smoothstep01(p / 0.6)
+                    } else {
+                        1.02 - 0.02 * smoothstep01((p - 0.6) / 0.4)
+                    };
+                    let lift = if p < 0.7 {
+                        -size * 0.035 * smoothstep01(p / 0.7)
+                    } else {
+                        -size * 0.035 * (1.0 - smoothstep01((p - 0.7) / 0.3))
+                    };
+                    (scale, lift)
                 };
-                let lift = if p < 0.7 {
-                    -size * 0.035 * smoothstep01(p / 0.7)
+                let alpha = if refined {
+                    (0.28 + 0.67 * fill) * enter
                 } else {
-                    -size * 0.035 * (1.0 - smoothstep01((p - 0.7) / 0.3))
+                    (0.30 + 0.62 * fill) * enter
                 };
-                let alpha = (0.30 + 0.62 * fill) * enter;
                 (scale, lift, alpha, true)
             }
         } else {
@@ -2411,21 +2498,31 @@ fn paint_lyrics_stage(
     };
     let word_fill = with_alpha(active_color, active_alpha);
     let milkdrop = fullscreen && app.milkdrop_behind_lyrics();
-    let base_quiet = palette.text.gamma_multiply(if fullscreen {
-        if milkdrop { 0.56 } else { 0.34 }
+    let (base_quiet, base_sung, base_active) = if motion.apple && !fullscreen {
+        (
+            palette.text.gamma_multiply(motion.inactive_alpha),
+            palette.text.gamma_multiply(motion.inactive_alpha),
+            Color32::WHITE,
+        )
     } else {
-        0.35
-    });
-    let base_sung = palette.text.gamma_multiply(if fullscreen {
-        if milkdrop { 0.66 } else { 0.44 }
-    } else {
-        0.48
-    });
-    let base_active = palette.text.gamma_multiply(if fullscreen {
-        if milkdrop { 0.66 } else { 0.55 }
-    } else {
-        0.55
-    });
+        (
+            palette.text.gamma_multiply(if fullscreen {
+                if milkdrop { 0.56 } else { 0.34 }
+            } else {
+                0.35
+            }),
+            palette.text.gamma_multiply(if fullscreen {
+                if milkdrop { 0.66 } else { 0.44 }
+            } else {
+                0.48
+            }),
+            palette.text.gamma_multiply(if fullscreen {
+                if milkdrop { 0.66 } else { 0.55 }
+            } else {
+                0.55
+            }),
+        )
+    };
     let hide_passed =
         fullscreen && (app.settings.lyrics_hide_passed_lines || app.settings.lyrics_minimal_mode);
     let viewport = ui.clip_rect();
@@ -2473,7 +2570,11 @@ fn paint_lyrics_stage(
         } else {
             1.0
         };
-        let dim = focus * motion.dim;
+        let dim = if motion.apple && !fullscreen {
+            focus
+        } else {
+            focus * motion.dim
+        };
         let quiet = base_quiet.gamma_multiply(dim);
         let sung = base_sung.gamma_multiply(dim);
         let active_base = base_active.gamma_multiply(focus);
@@ -2511,25 +2612,44 @@ fn paint_lyrics_stage(
                 / (base_size * 2.0))
                 .clamp(0.0, 1.0);
             edge * edge * (3.0 - 2.0 * edge)
+        } else if motion.apple {
+            let center = ui.cursor().top() + base_size * 0.5;
+            let edge = ((center - viewport.top()).min(viewport.bottom() - center)
+                / (base_size * 1.1))
+                .clamp(0.0, 1.0);
+            edge * edge * (3.0 - 2.0 * edge)
         } else {
             1.0
         };
         let rise = if motion.rise && is_active {
-            (1.0 - lit_eased) * base_size * if fullscreen { 0.14 } else { 0.12 }
+            let em = if fullscreen {
+                0.14
+            } else if motion.apple {
+                motion.word_lift
+            } else {
+                0.12
+            };
+            (1.0 - lit_eased) * base_size * em
         } else {
             0.0
         };
-        let look = motion.line(
+        let font = if motion.apple && !fullscreen {
             if is_active {
-                theme::lyrics_sung(base_size)
+                theme::semibold(base_size)
             } else {
-                theme::lyrics_quiet(base_size)
-            },
-            base,
-            word_fill,
-            wrap,
-            rise,
-        );
+                theme::medium(base_size * motion.inactive_scale)
+            }
+        } else if is_active {
+            theme::lyrics_sung(base_size)
+        } else {
+            theme::lyrics_quiet(base_size)
+        };
+        let mut look = motion.line(font, base, word_fill, wrap, rise);
+        // The pill belongs to the card preview; a full-height view would turn
+        // it into a bar across the whole column.
+        if fullscreen || options.line_budget.is_none() {
+            look.pill = false;
+        }
         let indent = if motion.duet_padding && line.opposite_aligned {
             (wrap * 0.07).min(56.0)
         } else {
@@ -2542,7 +2662,7 @@ fn paint_lyrics_stage(
             continue;
         }
         let draw_line = |ui: &mut egui::Ui| {
-            if fullscreen {
+            if opacity < 0.999 {
                 ui.multiply_opacity(opacity);
             }
             if line.text.is_empty() && line.background.is_empty() && synced {
@@ -2557,6 +2677,7 @@ fn paint_lyrics_stage(
                     line.at_ms.unwrap_or(0),
                     line.end_ms.unwrap_or(0),
                     position_ms,
+                    motion.dots,
                 )
             } else if word_line(line) {
                 paint_word_line(
@@ -2617,6 +2738,28 @@ fn paint_lyrics_stage(
         ui.add_space(line_gap);
     }
     painted
+}
+
+/// A soft shadow over the collapsed stage's top and bottom edges, so a line
+/// that reaches the card boundary fades instead of hard-clipping.
+fn paint_stage_fade(painter: &egui::Painter, rect: Rect) {
+    const FADE: f32 = 18.0;
+    let base = Color32::from_rgb(18, 18, 20);
+    for (y0, y1, top_alpha, bottom_alpha) in [
+        (rect.top(), rect.top() + FADE, 100, 0),
+        (rect.bottom() - FADE, rect.bottom(), 0, 100),
+    ] {
+        let top = Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), top_alpha);
+        let bottom = Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), bottom_alpha);
+        let mut mesh = egui::Mesh::default();
+        mesh.colored_vertex(pos2(rect.left(), y0), top);
+        mesh.colored_vertex(pos2(rect.right(), y0), top);
+        mesh.colored_vertex(pos2(rect.right(), y1), bottom);
+        mesh.colored_vertex(pos2(rect.left(), y1), bottom);
+        mesh.add_triangle(0, 1, 2);
+        mesh.add_triangle(0, 2, 3);
+        painter.add(egui::Shape::mesh(mesh));
+    }
 }
 
 /// The playback context, the cover stage, the track metadata with its save
@@ -2758,7 +2901,7 @@ fn now_playing_stage(app: &mut App, ui: &mut egui::Ui) {
     }
 
     if collapsed {
-        let height = (ui.available_height() * 0.42).clamp(140.0, 300.0);
+        let height = (ui.available_height() * 0.52).clamp(180.0, 320.0);
         let stage_size = vec2(ui.available_width().max(1.0), height);
         let (stage_rect, _) = ui.allocate_exact_size(stage_size, Sense::hover());
         let padding = ui
@@ -2768,6 +2911,21 @@ fn now_playing_stage(app: &mut App, ui: &mut egui::Ui) {
                 Sense::click(),
             )
             .on_hover_cursor(egui::CursorIcon::PointingHand);
+
+        let motion = MotionLook::from_settings(&app.settings, 22);
+        if motion.card {
+            ui.painter().rect_filled(
+                stage_rect,
+                CornerRadius::same(18),
+                Color32::from_white_alpha(14),
+            );
+            ui.painter().rect_stroke(
+                stage_rect,
+                CornerRadius::same(18),
+                egui::Stroke::new(1.0, Color32::from_white_alpha(20)),
+                egui::StrokeKind::Inside,
+            );
+        }
 
         let mut placeholder = None;
         let display = match &app.lyrics {
@@ -2813,10 +2971,13 @@ fn now_playing_stage(app: &mut App, ui: &mut egui::Ui) {
                 (now.position_ms as i64 + app.settings.lyrics_offset_ms as i64).max(0) as u32;
             let active_at = position_ms.saturating_add(app.settings.lyrics_early_scroll_ms);
             let active = lyrics.active_line_with_hold(active_at, app.settings.lyrics_line_hold_ms);
-            let motion = MotionLook::from_settings(&app.settings, 22);
             let options = StageOptions {
                 active_fraction: 0.45,
-                line_budget: Some(5),
+                line_budget: Some(if app.settings.lyrics_minimal_mode {
+                    1
+                } else {
+                    5
+                }),
                 interactive: true,
             };
             let window = stage_window(
@@ -2831,41 +2992,31 @@ fn now_playing_stage(app: &mut App, ui: &mut egui::Ui) {
                     .filter(|index| *index < window.len())
             });
             let lines = &lyrics.lines[window];
-            let mut stage_ui = ui.new_child(UiBuilder::new().max_rect(stage_rect));
-            stage_ui.set_clip_rect(stage_rect);
-            egui::ScrollArea::vertical()
-                .id_salt("lyrics-card-stage")
-                .auto_shrink([false, false])
-                .animated(false)
-                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                .show(&mut stage_ui, |ui| {
-                    ui.spacing_mut().scroll.fade.strength = 0.0;
-                    ui.spacing_mut().scroll.fade.size = 0.0;
-                    // Symmetric scroll room lets the measured active block
-                    // reach 45 percent wherever it falls in the five-line
-                    // window. It is not used to guess the active position.
-                    ui.add_space(height);
-                    let stage = paint_lyrics_stage(app, ui, lines, window_active, &motion, options);
-                    ui.add_space(height);
-                    // The collapsed card always follows. Unlike the expanded
-                    // view, it has no manual-scroll or shown-line state.
-                    if let Some(active_rect) = stage.active_rect {
-                        let viewport = ui.clip_rect();
-                        let wanted = viewport.top() + viewport.height() * options.active_fraction;
-                        let target = Rect::from_center_size(
-                            pos2(
-                                active_rect.center().x,
-                                active_rect.center().y + viewport.center().y - wanted,
-                            ),
-                            active_rect.size(),
-                        );
-                        ui.scroll_to_rect_animation(
-                            target,
-                            Some(Align::Center),
-                            egui::style::ScrollAnimation::none(),
-                        );
-                    }
-                });
+            // Leave room for the pill's padding so it stays inside the card.
+            let inset = if motion.pill { 14.0 } else { 0.0 };
+            let text_rect = Rect::from_min_max(
+                pos2(stage_rect.left() + inset, stage_rect.top()),
+                pos2(stage_rect.right() - inset, stage_rect.bottom()),
+            );
+            let mut stage_ui = ui.new_child(UiBuilder::new().max_rect(text_rect));
+            stage_ui.set_clip_rect(text_rect);
+            // The collapsed card always follows. Position the five-line
+            // window by the height of the lines before the active one, so
+            // the active block's centre lands at 45 percent without a
+            // scroll area fighting the layout.
+            let font_scale = (app.settings.lyrics_font_size as f32 / 100.0).clamp(0.7, 1.8);
+            let line_size = LINE_SIZE * font_scale;
+            let line_gap = LINE_GAP * font_scale * (f32::from(app.settings.lyrics_spacing) / 100.0);
+            let before = window_active.unwrap_or(0) as f32;
+            let active_top = before * (line_size * 1.2 + line_gap);
+            let top = (height * options.active_fraction - active_top - line_size * 0.5).max(0.0);
+            let mut stage_ui = ui.new_child(UiBuilder::new().max_rect(text_rect));
+            stage_ui.set_clip_rect(text_rect);
+            stage_ui.add_space(top);
+            let _ = paint_lyrics_stage(app, &mut stage_ui, lines, window_active, &motion, options);
+            if motion.card {
+                paint_stage_fade(ui.painter(), stage_rect);
+            }
             request_word_repaint(
                 ui.ctx(),
                 &now,
@@ -3788,12 +3939,13 @@ fn fullscreen_contents(app: &mut App, ui: &mut egui::Ui) {
 #[cfg(test)]
 mod tests {
     use super::{
-        WordCluster, align_offset, boosted_motion, fill_edge, fullscreen_content_width, glow_level,
-        interlude_dot_radius, joined_text, joined_transliteration, merges_cluster, piece_emphasis,
-        piece_filled, preferred_backdrop_art, seek_target, stage_window, word_swell,
+        MotionLook, WordCluster, align_offset, boosted_motion, fill_edge, fullscreen_content_width,
+        glow_level, interlude_dot_radius, joined_text, joined_transliteration, merges_cluster,
+        piece_emphasis, piece_filled, preferred_backdrop_art, seek_target, stage_window,
+        word_swell,
     };
     use crate::lyrics::Syllable;
-    use crate::settings::{LyricsAlign, SyllableMerge};
+    use crate::settings::{LyricsAlign, LyricsStyle, Settings, SyllableMerge};
     use egui::{Color32, FontId, Rect, vec2};
 
     #[test]
@@ -4091,5 +4243,26 @@ mod tests {
         assert_eq!(stage_window(14, Some(13), 0.45, Some(5)), 9..14);
         assert_eq!(stage_window(3, Some(1), 0.45, Some(5)), 0..3);
         assert_eq!(stage_window(14, Some(6), 0.45, None), 0..14);
+    }
+
+    #[test]
+    fn the_apple_music_profile_owns_the_pill_and_card() {
+        let mut settings = Settings::default();
+        settings.apply_lyrics_style(LyricsStyle::AppleMusic);
+        let apple = MotionLook::from_settings(&settings, 22);
+        assert!(apple.pill && apple.card && apple.dots);
+        assert_eq!(apple.active_growth, 1.0);
+        assert!((apple.inactive_scale - 0.98).abs() < 0.001);
+        assert!((apple.inactive_alpha - 0.55).abs() < 0.001);
+
+        settings.apply_lyrics_style(LyricsStyle::Spicy);
+        let spicy = MotionLook::from_settings(&settings, 22);
+        assert!(!spicy.pill && !spicy.card && !spicy.dots);
+        assert_eq!(spicy.active_growth, 1.10);
+
+        settings.apply_lyrics_style(LyricsStyle::Minimal);
+        let minimal = MotionLook::from_settings(&settings, 22);
+        assert!(!minimal.pill && !minimal.card && !minimal.dots);
+        assert_eq!(minimal.active_growth, 1.0);
     }
 }
