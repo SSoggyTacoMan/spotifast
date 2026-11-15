@@ -2009,9 +2009,10 @@ fn lyrics_settings_popup(
                 theme::bold(14.0),
                 palette.text,
             );
-            ui.add_space(6.0);
+            ui.add_space(8.0);
 
             // A preset writes a whole look; every row below stays adjustable.
+            lyrics_popup_group(ui, palette, &gettext(locale, "Style preset"));
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 5.0;
                 for style in LyricsStyle::ALL {
@@ -2048,322 +2049,342 @@ fn lyrics_settings_popup(
                 }
             });
             ui.add_space(4.0);
+            if let Some(value) = lyrics_popup_step(
+                ui,
+                palette,
+                &gettext(locale, "Text size"),
+                app.settings.lyrics_font_size as i32,
+                10,
+                70..=160,
+                |value| format!("{value}%"),
+            ) {
+                app.settings.lyrics_font_size = value as u32;
+                changed = true;
+            }
+            ui.add_space(2.0);
             widgets::menu_separator(ui, palette);
 
-            let max_height = (ui.ctx().content_rect().height() * 0.62).max(280.0);
-            egui::ScrollArea::vertical()
-                .id_salt("lyrics-settings-scroll")
-                .max_height(max_height)
-                .show(ui, |ui| {
-                    lyrics_popup_group(ui, palette, &gettext(locale, "Look"));
-                    if let Some(value) = lyrics_popup_step(
-                        ui,
-                        palette,
-                        &gettext(locale, "Text size"),
-                        app.settings.lyrics_font_size as i32,
-                        10,
-                        70..=160,
-                        |value| format!("{value}%"),
-                    ) {
-                        app.settings.lyrics_font_size = value as u32;
-                        changed = true;
-                    }
-                    if let Some(value) = lyrics_popup_step(
-                        ui,
-                        palette,
-                        &gettext(locale, "Active line position"),
-                        i32::from(app.settings.lyrics_position),
-                        5,
-                        15..=75,
-                        |value| format!("{value}%"),
-                    ) {
-                        app.settings.lyrics_position = value as u8;
-                        changed = true;
-                    }
-                    if let Some(value) = lyrics_popup_step(
-                        ui,
-                        palette,
-                        &gettext(locale, "Line spacing"),
-                        i32::from(app.settings.lyrics_spacing),
-                        10,
-                        50..=200,
-                        |value| format!("{value}%"),
-                    ) {
-                        app.settings.lyrics_spacing = value as u8;
-                        changed = true;
-                    }
-                    if let Some(value) = lyrics_popup_step(
-                        ui,
-                        palette,
-                        &gettext(locale, "Inactive brightness"),
-                        i32::from(app.settings.lyrics_dim),
-                        5,
-                        20..=100,
-                        |value| format!("{value}%"),
-                    ) {
-                        app.settings.lyrics_dim = value as u8;
-                        changed = true;
-                    }
-                    changed |= lyrics_popup_switch(
-                        ui,
-                        palette,
-                        &gettext(locale, "Focus mode"),
-                        "distance_blur",
-                        &mut app.settings.lyrics_distance_blur,
-                    );
-                    if let Some(value) = lyrics_popup_step(
-                        ui,
-                        palette,
-                        &gettext(locale, "Focus strength"),
-                        i32::from(app.settings.lyrics_focus_strength),
-                        5,
-                        0..=100,
-                        |value| format!("{value}%"),
-                    ) {
-                        app.settings.lyrics_focus_strength = value as u8;
-                        changed = true;
-                    }
+            // Everything beyond the preset and the basics is one click away.
+            let advanced_id = egui::Id::new("lyrics-settings-advanced");
+            let mut advanced = ui
+                .data(|data| data.get_temp::<bool>(advanced_id))
+                .unwrap_or(false);
+            let icon = if advanced {
+                Icon::ChevronUp
+            } else {
+                Icon::ChevronDown
+            };
+            if theme::soft_button(ui, palette, Some(icon), &gettext(locale, "More"), advanced)
+                .clicked()
+            {
+                advanced = !advanced;
+                ui.data_mut(|data| data.insert_temp(advanced_id, advanced));
+            }
 
-                    lyrics_popup_group(ui, palette, &gettext(locale, "Motion"));
-                    changed |= lyrics_popup_switch(
-                        ui,
-                        palette,
-                        &gettext(locale, "Word bounce"),
-                        "bounce",
-                        &mut app.settings.lyrics_bounce,
-                    );
-                    if let Some(value) = lyrics_popup_step(
-                        ui,
-                        palette,
-                        &gettext(locale, "Bounce strength"),
-                        i32::from(app.settings.lyrics_bounce_strength),
-                        10,
-                        0..=200,
-                        |value| format!("{value}%"),
-                    ) {
-                        app.settings.lyrics_bounce_strength = value as u8;
-                        changed = true;
-                    }
-                    changed |= lyrics_popup_switch(
-                        ui,
-                        palette,
-                        &gettext(locale, "Word glow"),
-                        "glow",
-                        &mut app.settings.lyrics_glow,
-                    );
-                    if let Some(value) = lyrics_popup_step(
-                        ui,
-                        palette,
-                        &gettext(locale, "Glow strength"),
-                        i32::from(app.settings.lyrics_glow_strength),
-                        10,
-                        0..=200,
-                        |value| format!("{value}%"),
-                    ) {
-                        app.settings.lyrics_glow_strength = value as u8;
-                        changed = true;
-                    }
-                    changed |= lyrics_popup_switch(
-                        ui,
-                        palette,
-                        &gettext(locale, "Rise into place"),
-                        "rise",
-                        &mut app.settings.lyrics_rise,
-                    );
-                    changed |= lyrics_popup_switch(
-                        ui,
-                        palette,
-                        &gettext(locale, "Active line scale"),
-                        "scale",
-                        &mut app.settings.lyrics_scale,
-                    );
-                    changed |= lyrics_popup_switch(
-                        ui,
-                        palette,
-                        &gettext(locale, "Smooth scrolling"),
-                        "smooth_scroll",
-                        &mut app.settings.lyrics_smooth_scroll,
-                    );
-                    if let Some(value) = lyrics_popup_step(
-                        ui,
-                        palette,
-                        &gettext(locale, "Scroll duration"),
-                        app.settings.lyrics_scroll_ms as i32,
-                        25,
-                        0..=1000,
-                        |value| format!("{value} ms"),
-                    ) {
-                        app.settings.lyrics_scroll_ms = value as u32;
-                        changed = true;
-                    }
-                    if let Some(value) = lyrics_popup_step(
-                        ui,
-                        palette,
-                        &gettext(locale, "Early scroll"),
-                        app.settings.lyrics_early_scroll_ms as i32,
-                        25,
-                        0..=800,
-                        |value| format!("{value} ms"),
-                    ) {
-                        app.settings.lyrics_early_scroll_ms = value as u32;
-                        changed = true;
-                    }
+            if advanced {
+                let max_height = (ui.ctx().content_rect().height() * 0.62).max(280.0);
+                egui::ScrollArea::vertical()
+                    .id_salt("lyrics-settings-scroll")
+                    .max_height(max_height)
+                    .show(ui, |ui| {
+                        lyrics_popup_group(ui, palette, &gettext(locale, "Look"));
+                        if let Some(value) = lyrics_popup_step(
+                            ui,
+                            palette,
+                            &gettext(locale, "Active line position"),
+                            i32::from(app.settings.lyrics_position),
+                            5,
+                            15..=75,
+                            |value| format!("{value}%"),
+                        ) {
+                            app.settings.lyrics_position = value as u8;
+                            changed = true;
+                        }
+                        if let Some(value) = lyrics_popup_step(
+                            ui,
+                            palette,
+                            &gettext(locale, "Line spacing"),
+                            i32::from(app.settings.lyrics_spacing),
+                            10,
+                            50..=200,
+                            |value| format!("{value}%"),
+                        ) {
+                            app.settings.lyrics_spacing = value as u8;
+                            changed = true;
+                        }
+                        if let Some(value) = lyrics_popup_step(
+                            ui,
+                            palette,
+                            &gettext(locale, "Inactive brightness"),
+                            i32::from(app.settings.lyrics_dim),
+                            5,
+                            20..=100,
+                            |value| format!("{value}%"),
+                        ) {
+                            app.settings.lyrics_dim = value as u8;
+                            changed = true;
+                        }
+                        changed |= lyrics_popup_switch(
+                            ui,
+                            palette,
+                            &gettext(locale, "Focus mode"),
+                            "distance_blur",
+                            &mut app.settings.lyrics_distance_blur,
+                        );
+                        if let Some(value) = lyrics_popup_step(
+                            ui,
+                            palette,
+                            &gettext(locale, "Focus strength"),
+                            i32::from(app.settings.lyrics_focus_strength),
+                            5,
+                            0..=100,
+                            |value| format!("{value}%"),
+                        ) {
+                            app.settings.lyrics_focus_strength = value as u8;
+                            changed = true;
+                        }
 
-                    lyrics_popup_group(ui, palette, &gettext(locale, "Words"));
-                    if let Some(value) = lyrics_popup_step(
-                        ui,
-                        palette,
-                        &gettext(locale, "Word fade"),
-                        i32::from(app.settings.lyrics_fade_width),
-                        5,
-                        0..=100,
-                        |value| format!("{value}%"),
-                    ) {
-                        app.settings.lyrics_fade_width = value as u8;
-                        changed = true;
-                    }
-                    if let Some(value) = lyrics_popup_step(
-                        ui,
-                        palette,
-                        &gettext(locale, "Line fade duration"),
-                        app.settings.lyrics_line_fade_ms as i32,
-                        25,
-                        0..=1000,
-                        |value| format!("{value} ms"),
-                    ) {
-                        app.settings.lyrics_line_fade_ms = value as u32;
-                        changed = true;
-                    }
-                    let mut merged = app.settings.lyrics_syllable_merge != SyllableMerge::Off;
-                    if lyrics_popup_switch(
-                        ui,
-                        palette,
-                        &gettext(locale, "Merge syllables"),
-                        "merge_syllables",
-                        &mut merged,
-                    ) {
-                        app.settings.lyrics_syllable_merge = if merged {
-                            if app.settings.lyrics_syllable_merge == SyllableMerge::Off {
-                                SyllableMerge::Full
+                        lyrics_popup_group(ui, palette, &gettext(locale, "Motion"));
+                        changed |= lyrics_popup_switch(
+                            ui,
+                            palette,
+                            &gettext(locale, "Word bounce"),
+                            "bounce",
+                            &mut app.settings.lyrics_bounce,
+                        );
+                        if let Some(value) = lyrics_popup_step(
+                            ui,
+                            palette,
+                            &gettext(locale, "Bounce strength"),
+                            i32::from(app.settings.lyrics_bounce_strength),
+                            10,
+                            0..=200,
+                            |value| format!("{value}%"),
+                        ) {
+                            app.settings.lyrics_bounce_strength = value as u8;
+                            changed = true;
+                        }
+                        changed |= lyrics_popup_switch(
+                            ui,
+                            palette,
+                            &gettext(locale, "Word glow"),
+                            "glow",
+                            &mut app.settings.lyrics_glow,
+                        );
+                        if let Some(value) = lyrics_popup_step(
+                            ui,
+                            palette,
+                            &gettext(locale, "Glow strength"),
+                            i32::from(app.settings.lyrics_glow_strength),
+                            10,
+                            0..=200,
+                            |value| format!("{value}%"),
+                        ) {
+                            app.settings.lyrics_glow_strength = value as u8;
+                            changed = true;
+                        }
+                        changed |= lyrics_popup_switch(
+                            ui,
+                            palette,
+                            &gettext(locale, "Rise into place"),
+                            "rise",
+                            &mut app.settings.lyrics_rise,
+                        );
+                        changed |= lyrics_popup_switch(
+                            ui,
+                            palette,
+                            &gettext(locale, "Active line scale"),
+                            "scale",
+                            &mut app.settings.lyrics_scale,
+                        );
+                        changed |= lyrics_popup_switch(
+                            ui,
+                            palette,
+                            &gettext(locale, "Smooth scrolling"),
+                            "smooth_scroll",
+                            &mut app.settings.lyrics_smooth_scroll,
+                        );
+                        if let Some(value) = lyrics_popup_step(
+                            ui,
+                            palette,
+                            &gettext(locale, "Scroll duration"),
+                            app.settings.lyrics_scroll_ms as i32,
+                            25,
+                            0..=1000,
+                            |value| format!("{value} ms"),
+                        ) {
+                            app.settings.lyrics_scroll_ms = value as u32;
+                            changed = true;
+                        }
+                        if let Some(value) = lyrics_popup_step(
+                            ui,
+                            palette,
+                            &gettext(locale, "Early scroll"),
+                            app.settings.lyrics_early_scroll_ms as i32,
+                            25,
+                            0..=800,
+                            |value| format!("{value} ms"),
+                        ) {
+                            app.settings.lyrics_early_scroll_ms = value as u32;
+                            changed = true;
+                        }
+
+                        lyrics_popup_group(ui, palette, &gettext(locale, "Words"));
+                        if let Some(value) = lyrics_popup_step(
+                            ui,
+                            palette,
+                            &gettext(locale, "Word fade"),
+                            i32::from(app.settings.lyrics_fade_width),
+                            5,
+                            0..=100,
+                            |value| format!("{value}%"),
+                        ) {
+                            app.settings.lyrics_fade_width = value as u8;
+                            changed = true;
+                        }
+                        if let Some(value) = lyrics_popup_step(
+                            ui,
+                            palette,
+                            &gettext(locale, "Line fade duration"),
+                            app.settings.lyrics_line_fade_ms as i32,
+                            25,
+                            0..=1000,
+                            |value| format!("{value} ms"),
+                        ) {
+                            app.settings.lyrics_line_fade_ms = value as u32;
+                            changed = true;
+                        }
+                        let mut merged = app.settings.lyrics_syllable_merge != SyllableMerge::Off;
+                        if lyrics_popup_switch(
+                            ui,
+                            palette,
+                            &gettext(locale, "Merge syllables"),
+                            "merge_syllables",
+                            &mut merged,
+                        ) {
+                            app.settings.lyrics_syllable_merge = if merged {
+                                if app.settings.lyrics_syllable_merge == SyllableMerge::Off {
+                                    SyllableMerge::Full
+                                } else {
+                                    app.settings.lyrics_syllable_merge
+                                }
                             } else {
-                                app.settings.lyrics_syllable_merge
-                            }
-                        } else {
-                            SyllableMerge::Off
-                        };
-                        changed = true;
-                    }
-                    changed |= lyrics_popup_switch(
-                        ui,
-                        palette,
-                        &gettext(locale, "Duet padding"),
-                        "duet_padding",
-                        &mut app.settings.lyrics_duet_padding,
-                    );
-                    changed |= lyrics_popup_switch(
-                        ui,
-                        palette,
-                        &gettext(locale, "Background vocal pop-out"),
-                        "background_pop",
-                        &mut app.settings.lyrics_background_pop,
-                    );
-                    changed |= lyrics_popup_switch(
-                        ui,
-                        palette,
-                        &gettext(locale, "Translations"),
-                        "translations",
-                        &mut app.settings.lyrics_show_translations,
-                    );
-                    changed |= lyrics_popup_switch(
-                        ui,
-                        palette,
-                        &gettext(locale, "Credits"),
-                        "credits",
-                        &mut app.settings.lyrics_show_credits,
-                    );
+                                SyllableMerge::Off
+                            };
+                            changed = true;
+                        }
+                        changed |= lyrics_popup_switch(
+                            ui,
+                            palette,
+                            &gettext(locale, "Duet padding"),
+                            "duet_padding",
+                            &mut app.settings.lyrics_duet_padding,
+                        );
+                        changed |= lyrics_popup_switch(
+                            ui,
+                            palette,
+                            &gettext(locale, "Background vocal pop-out"),
+                            "background_pop",
+                            &mut app.settings.lyrics_background_pop,
+                        );
+                        changed |= lyrics_popup_switch(
+                            ui,
+                            palette,
+                            &gettext(locale, "Translations"),
+                            "translations",
+                            &mut app.settings.lyrics_show_translations,
+                        );
+                        changed |= lyrics_popup_switch(
+                            ui,
+                            palette,
+                            &gettext(locale, "Credits"),
+                            "credits",
+                            &mut app.settings.lyrics_show_credits,
+                        );
 
-                    lyrics_popup_group(ui, palette, &gettext(locale, "Scene"));
-                    if let Some(value) = lyrics_popup_step(
-                        ui,
-                        palette,
-                        &gettext(locale, "Backdrop dimming"),
-                        i32::from(app.settings.lyrics_background_dim),
-                        5,
-                        0..=100,
-                        |value| format!("{value}%"),
-                    ) {
-                        app.settings.lyrics_background_dim = value as u8;
-                        changed = true;
-                    }
-                    changed |= lyrics_popup_switch(
-                        ui,
-                        palette,
-                        &gettext(locale, "Cover colours"),
-                        "cover_color",
-                        &mut app.settings.lyrics_cover_color,
-                    );
-                    changed |= lyrics_popup_switch(
-                        ui,
-                        palette,
-                        &gettext(locale, "Hide passed lines"),
-                        "hide_passed",
-                        &mut app.settings.lyrics_hide_passed_lines,
-                    );
-                    changed |= lyrics_popup_switch(
-                        ui,
-                        palette,
-                        &gettext(locale, "Simple mode"),
-                        "simple_mode",
-                        &mut app.settings.lyrics_simple_mode,
-                    );
-                    changed |= lyrics_popup_switch(
-                        ui,
-                        palette,
-                        &gettext(locale, "Minimal mode"),
-                        "minimal_mode",
-                        &mut app.settings.lyrics_minimal_mode,
-                    );
-                    changed |= lyrics_popup_switch(
-                        ui,
-                        palette,
-                        &gettext(locale, "Low performance"),
-                        "low_performance",
-                        &mut app.settings.lyrics_low_performance,
-                    );
+                        lyrics_popup_group(ui, palette, &gettext(locale, "Scene"));
+                        if let Some(value) = lyrics_popup_step(
+                            ui,
+                            palette,
+                            &gettext(locale, "Backdrop dimming"),
+                            i32::from(app.settings.lyrics_background_dim),
+                            5,
+                            0..=100,
+                            |value| format!("{value}%"),
+                        ) {
+                            app.settings.lyrics_background_dim = value as u8;
+                            changed = true;
+                        }
+                        changed |= lyrics_popup_switch(
+                            ui,
+                            palette,
+                            &gettext(locale, "Cover colours"),
+                            "cover_color",
+                            &mut app.settings.lyrics_cover_color,
+                        );
+                        changed |= lyrics_popup_switch(
+                            ui,
+                            palette,
+                            &gettext(locale, "Hide passed lines"),
+                            "hide_passed",
+                            &mut app.settings.lyrics_hide_passed_lines,
+                        );
+                        changed |= lyrics_popup_switch(
+                            ui,
+                            palette,
+                            &gettext(locale, "Simple mode"),
+                            "simple_mode",
+                            &mut app.settings.lyrics_simple_mode,
+                        );
+                        changed |= lyrics_popup_switch(
+                            ui,
+                            palette,
+                            &gettext(locale, "Minimal mode"),
+                            "minimal_mode",
+                            &mut app.settings.lyrics_minimal_mode,
+                        );
+                        changed |= lyrics_popup_switch(
+                            ui,
+                            palette,
+                            &gettext(locale, "Low performance"),
+                            "low_performance",
+                            &mut app.settings.lyrics_low_performance,
+                        );
 
-                    lyrics_popup_group(ui, palette, &gettext(locale, "Timing"));
-                    if let Some(value) = lyrics_popup_step(
-                        ui,
-                        palette,
-                        &gettext(locale, "Line hold"),
-                        app.settings.lyrics_line_hold_ms as i32,
-                        50,
-                        0..=500,
-                        |value| format!("{value} ms"),
-                    ) {
-                        app.settings.lyrics_line_hold_ms = value as u32;
-                        changed = true;
-                    }
-                    if let Some(value) = lyrics_popup_step(
-                        ui,
-                        palette,
-                        &gettext(locale, "Timing offset"),
-                        app.settings.lyrics_offset_ms,
-                        25,
-                        -500..=500,
-                        |value| format!("{value:+} ms"),
-                    ) {
-                        app.settings.lyrics_offset_ms = value;
-                        changed = true;
-                    }
-                    changed |= lyrics_popup_switch(
-                        ui,
-                        palette,
-                        &gettext(locale, "In-window full screen"),
-                        "windowed_fullscreen",
-                        &mut app.settings.lyrics_windowed_fullscreen,
-                    );
-                });
+                        lyrics_popup_group(ui, palette, &gettext(locale, "Timing"));
+                        if let Some(value) = lyrics_popup_step(
+                            ui,
+                            palette,
+                            &gettext(locale, "Line hold"),
+                            app.settings.lyrics_line_hold_ms as i32,
+                            50,
+                            0..=500,
+                            |value| format!("{value} ms"),
+                        ) {
+                            app.settings.lyrics_line_hold_ms = value as u32;
+                            changed = true;
+                        }
+                        if let Some(value) = lyrics_popup_step(
+                            ui,
+                            palette,
+                            &gettext(locale, "Timing offset"),
+                            app.settings.lyrics_offset_ms,
+                            25,
+                            -500..=500,
+                            |value| format!("{value:+} ms"),
+                        ) {
+                            app.settings.lyrics_offset_ms = value;
+                            changed = true;
+                        }
+                        changed |= lyrics_popup_switch(
+                            ui,
+                            palette,
+                            &gettext(locale, "In-window full screen"),
+                            "windowed_fullscreen",
+                            &mut app.settings.lyrics_windowed_fullscreen,
+                        );
+                    });
+            }
 
             ui.add_space(6.0);
             widgets::menu_separator(ui, palette);

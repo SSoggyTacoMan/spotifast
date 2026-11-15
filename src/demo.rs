@@ -9257,6 +9257,90 @@ mod tests {
         app.backend.shutdown();
     }
 
+    /// The lyrics popup leads with presets; the rest of the controls stay
+    /// behind **More** until asked for.
+    #[cfg(feature = "demo")]
+    #[test]
+    fn the_lyrics_popup_puts_presets_first() {
+        let (ctx, mut app) = accessible_app("lyrics-popup-presets");
+        app.backend.set_offline(true);
+        app.show_lyrics_panel = true;
+        app.settings.lyrics_width = 360.0;
+        app.settings
+            .apply_lyrics_style(crate::settings::LyricsStyle::AppleMusic);
+        app.lyrics = Loadable::Loaded(Some(word_sample_lyrics()));
+        app.lyrics_following = true;
+        app.lyrics_card_collapsed = true;
+        app.local.position_ms = 80_400;
+        app.local.position_at = None;
+        if let Some(remote) = &mut app.remote {
+            remote.state.progress_ms = Some(80_400);
+        }
+        let size = egui::vec2(1100.0, 900.0);
+        for _ in 0..30 {
+            view_frame_sized(&ctx, &mut app, Vec::new(), App::frame_ui, size);
+        }
+        let drawn = view_frame_sized(&ctx, &mut app, Vec::new(), App::frame_ui, size);
+        let title = drawn
+            .iter()
+            .filter(|(text, _)| text == "Lyrics")
+            .map(|(_, rect)| rect.center())
+            .max_by(|a, b| a.x.total_cmp(&b.x))
+            .expect("the card header is drawn");
+        let stage = ctx
+            .read_response(egui::Id::new("lyrics-card-stage"))
+            .expect("the lyrics card has a stage")
+            .rect;
+        let gear = egui::pos2(stage.right() - 116.0, title.y);
+        frame_events(
+            &ctx,
+            &mut app,
+            pointer_click(gear, egui::PointerButton::Primary),
+        );
+        for _ in 0..8 {
+            view_frame_sized(&ctx, &mut app, Vec::new(), App::frame_ui, size);
+        }
+        let popup = view_frame_sized(&ctx, &mut app, Vec::new(), App::frame_ui, size);
+        for text in [
+            "Style preset",
+            "Spicy",
+            "Apple Music",
+            "Minimal",
+            "Text size",
+        ] {
+            assert!(
+                popup.iter().any(|(drawn, _)| drawn == text),
+                "the popup leads with {text}: {popup:?}"
+            );
+        }
+        assert!(
+            !popup.iter().any(|(drawn, _)| drawn == "Focus mode"),
+            "advanced controls stay behind More: {popup:?}"
+        );
+        let more = popup
+            .iter()
+            .find(|(text, _)| text == "More")
+            .expect("the popup offers More")
+            .1
+            .center();
+        frame_events(
+            &ctx,
+            &mut app,
+            pointer_click(more, egui::PointerButton::Primary),
+        );
+        for _ in 0..8 {
+            view_frame_sized(&ctx, &mut app, Vec::new(), App::frame_ui, size);
+        }
+        let opened = view_frame_sized(&ctx, &mut app, Vec::new(), App::frame_ui, size);
+        for text in ["Look", "Focus mode", "Motion"] {
+            assert!(
+                opened.iter().any(|(drawn, _)| drawn == text),
+                "More reveals {text}: {opened:?}"
+            );
+        }
+        app.backend.shutdown();
+    }
+
     /// Five logical lines stay inside the collapsed stage at both heights its
     /// clamp is meant to support, with the active block still at 45 percent.
     #[cfg(feature = "demo")]

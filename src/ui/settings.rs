@@ -1778,15 +1778,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let lyrics_title = gettext(locale, "Lyrics");
     let lyrics_rows = [
         RowText::new(
-            gettext(locale, "Text size"),
-            gettext(locale, "Relative size of lyrics text."),
-        ),
-        RowText::new(
             gettext(locale, "Style preset"),
             gettext(
                 locale,
                 "Start from Spicy, Apple Music or Minimal. Every part can still be adjusted below.",
             ),
+        ),
+        RowText::new(
+            gettext(locale, "Text size"),
+            gettext(locale, "Relative size of lyrics text."),
         ),
         RowText::new(
             gettext(locale, "Text alignment"),
@@ -2003,30 +2003,6 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 |ui| {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 6.0;
-                        let mut size = app.settings.lyrics_font_size;
-                        if theme::soft_button(ui, &palette, None, "-", false).clicked() {
-                            size = size.saturating_sub(10).max(70);
-                        }
-                        theme::text(ui, format!("{size}%"), theme::medium(13.5), palette.text);
-                        if theme::soft_button(ui, &palette, None, "+", false).clicked() {
-                            size = (size + 10).min(160);
-                        }
-                        if size != app.settings.lyrics_font_size {
-                            app.settings.lyrics_font_size = size;
-                            app.mark_settings_dirty();
-                        }
-                    });
-                },
-            );
-            filtered_row(
-                ui,
-                &palette,
-                &needle,
-                &lyrics_title,
-                &lyrics_rows[1],
-                |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 6.0;
                         for style in LyricsStyle::ALL {
                             if theme::soft_button(
                                 ui,
@@ -2040,6 +2016,30 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                                 app.settings.apply_lyrics_style(style);
                                 app.mark_settings_dirty();
                             }
+                        }
+                    });
+                },
+            );
+            filtered_row(
+                ui,
+                &palette,
+                &needle,
+                &lyrics_title,
+                &lyrics_rows[1],
+                |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        let mut size = app.settings.lyrics_font_size;
+                        if theme::soft_button(ui, &palette, None, "-", false).clicked() {
+                            size = size.saturating_sub(10).max(70);
+                        }
+                        theme::text(ui, format!("{size}%"), theme::medium(13.5), palette.text);
+                        if theme::soft_button(ui, &palette, None, "+", false).clicked() {
+                            size = (size + 10).min(160);
+                        }
+                        if size != app.settings.lyrics_font_size {
+                            app.settings.lyrics_font_size = size;
+                            app.mark_settings_dirty();
                         }
                     });
                 },

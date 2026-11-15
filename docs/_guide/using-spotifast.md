@@ -865,9 +865,11 @@ and a song without words, such as an instrumental, shows just its cover in
 the middle of the screen.
 
 The gear beside the words, in the side panel or full screen, opens quick lyrics
-settings; **All settings...** there opens the complete Lyrics section. The
-**Spicy**, **Apple Music** and **Minimal** presets set a whole look, and every
-part stays adjustable afterwards: alignment, where the sung line sits, line
+settings. It leads with the **Spicy**, **Apple Music** and **Minimal** presets,
+text alignment and text size; **More** opens the rest without leaving the
+window. **All settings...** there opens the complete Lyrics section, where the
+same presets sit at the top and every part stays adjustable afterwards:
+where the sung line sits, line
 spacing, dimming and focus, bounce and glow strength, the softness of the
 karaoke edge, line fades, rise and scale, smooth scrolling with an early lead,
 hiding sung lines, simple and minimal modes, merging a split word's syllables,
