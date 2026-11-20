@@ -40,8 +40,13 @@ pub fn side_panel(app: &mut App, ui: &mut egui::Ui) {
         );
     let response = panel.show(ui, |ui| {
         // The panel sits where the Queue would, under the same controls.
-        let window_controls =
-            super::window_controls_reservation(ui.ctx(), true, false, ui.available_width());
+        let window_controls = super::window_controls_reservation(
+            ui.ctx(),
+            true,
+            false,
+            app.show_now_playing_panel,
+            ui.available_width(),
+        );
         ui.add_space(window_controls.queue_top);
         let mut close = false;
         egui::Sides::new().shrink_left().show(

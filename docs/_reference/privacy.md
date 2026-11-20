@@ -69,6 +69,13 @@ Spotifast connects only to the services below.
   The key is never written to log files and is omitted from settings export
   when empty. Answers are cached for 30 days, then discarded. Without a key,
   or when the API has no sync for the song, the catalogues below answer.
+- **Spotify Canvas.** When the lyrics view is open and Spotify Canvas is on
+  (the default), Spotifast sends the playing track's Spotify ID to Spicy
+  Lyrics' Canvas service at `regional.canvasstore.slnode.spicylyrics.org`.
+  It answers with the track's Canvas MP4 URL, which is downloaded from
+  Spotify's `canvaz.scdn.co`; no account data is sent. Answers, including
+  "no Canvas", are remembered for 24 hours. A failed lookup is retried once,
+  then pauses before asking again.
 - **AMLL TTML DB.** The track's artist and title go to
   [api.amll.dev](https://api.amll.dev), which returns community TTML. Nothing
   identifying you is included. Answers are cached for 30 days.

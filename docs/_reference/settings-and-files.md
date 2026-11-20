@@ -424,44 +424,31 @@ main fields are:
 | `milkdrop_screen_hz` | `0` | Last refresh rate reported by MilkDrop's window |
 | `milkdrop_fullscreen` | `false` | The MilkDrop window fills the screen |
 | `milkdrop_panel_height` | `232` | The MilkDrop panel's height in the mini player, in skin pixels |
-| `lyrics_font_size` | `100` | Lyrics text size as a percentage of the default, 70 to 160 |
-| `lyrics_glow` | `true` | Soft glow around the sung word |
-| `lyrics_bounce` | `true` | Swell and lift words as they start sounding |
+| `lyrics_font_size` | `100` | Lyrics text size as a percentage of the default, 60 to 200 |
+| `lyrics_line_spacing` | `100` | Gap between lyric lines as a percentage of the default, 50 to 200 |
+| `lyrics_style` | `spring` | Look: `spring` or `bloom`. Older `spicy` and `minimal` read as `spring`, and `apple_music` as `bloom` |
+| `lyrics_glow` | `true` | Soft glow around the sung word, letters and interlude dots |
 | `lyrics_distance_blur` | `true` | Fade lines away from the sung line |
-| `lyrics_line_hold_ms` | `0` | Hold the active line before switching, 0 to 500 |
+| `lyrics_canvas` | `true` | Use the song's Spotify Canvas as the moving background; the track ID is sent to Spicy Lyrics' Canvas service |
 | `lyrics_offset_ms` | `0` | Shift lyrics timing, in milliseconds, -500 to 500 |
 | `lyrics_windowed_fullscreen` | `true` | Fill the app window instead of entering the system's full screen |
-| `lyrics_style` | `spicy` | Look preset: `spicy`, `apple_music`, or `minimal`; applying one writes the appearance fields below |
-| `lyrics_align` | `left` | Lines sit `left`, `center`, or `right` in the column |
-| `lyrics_position` | `38` | Where the sung line sits in full screen, as a percentage from the top, 15 to 75 |
-| `lyrics_spacing` | `100` | Gap between lines, as a percentage of the default, 50 to 200 |
-| `lyrics_dim` | `100` | Brightness of lines that are not being sung, 20 to 100 |
-| `lyrics_focus_strength` | `100` | How quickly distant lines fade, 0 to 100 |
-| `lyrics_bounce_strength` | `100` | How far words swell and lift, 0 to 200 |
-| `lyrics_glow_strength` | `100` | Glow brightness around the sung word, 0 to 200 |
-| `lyrics_fade_width` | `30` | Soft leading edge of the karaoke fill, 0 to 100 |
-| `lyrics_line_fade_ms` | `300` | How long a line takes to light up or dim, in milliseconds |
-| `lyrics_early_scroll_ms` | `0` | Follow a line this many milliseconds early, 0 to 800 |
-| `lyrics_scroll_ms` | `450` | How long a smooth scroll between lines takes, in milliseconds |
-| `lyrics_smooth_scroll` | `true` | Glide between lines instead of jumping |
-| `lyrics_rise` | `true` | Lift the sung line into place |
-| `lyrics_scale` | `true` | Grow the sung line |
-| `lyrics_hide_passed_lines` | `false` | Hide lines already sung in full screen |
-| `lyrics_simple_mode` | `false` | Drop glow, bounce, rise and ambient colour |
-| `lyrics_minimal_mode` | `false` | Keep only the sung line and the lines ahead |
-| `lyrics_low_performance` | `false` | Fewer repaint frames and lighter glow |
-| `lyrics_syllable_merge` | `full` | Fill a split word as one: `off`, `full`, `steady` (only steadily sung words), or `held` (only words held long enough). Older files' `lyrics_join_words` is read as `full` or `off` |
-| `lyrics_word_motion_boost` | `false` | Multiply how far sung words grow and lift |
-| `lyrics_seek_fade_compensation` | `false` | Start a little before a line that is tapped, so the player's fade-in does not swallow its first word |
-| `lyrics_refined_credits` | `false` | Show the credits as quiet type under the last line, dim until the song is sung |
+| `lyrics_split_view` | `false` | Full screen lyrics keep the sidebar, top bar and player bar, with the song and queue in a right column |
+| `lyrics_minimal_mode` | `false` | Fade away previous lines: keep the sung line and the lines ahead |
+| `lyrics_low_performance` | `false` | No blur, glow or background motion, and fewer frames, for slower machines |
+| `lyrics_syllable_merge` | `off` | Fill a split word as one: `off`, `full`, `steady` (only steadily sung words) or `held` (only words held long enough). Older files' `lyrics_join_words` is read as `full` or `off` |
+| `lyrics_syllable_pace` | `false` | A merged held word's letters keep each syllable's own pace |
+| `lyrics_original_word_motion` | `false` | Use Spicy Lyrics desktop's word motion instead of mobile's stronger motion |
+| `lyrics_seek_fade_compensation` | `true` | Start a little before a line that is tapped, so the player's fade-in does not swallow its first word |
+| `lyrics_refined_credits` | `true` | Show the credits as quiet type under the last line, dim until the song is sung |
 | `lyrics_credits_follow_last_line` | `false` | Put the credits on the side of the last duet line |
 | `lyrics_keep_overlapping_lines` | `true` | Keep a line that ends while the one above it is still being sung |
 | `lyrics_duet_padding` | `true` | Step duet lines in from the singer's side |
 | `lyrics_show_translations` | `true` | Show translations and romanisations under the words |
 | `lyrics_show_credits` | `true` | Show the lyrics source and credits at the end |
-| `lyrics_background_dim` | `100` | How dark the artwork behind the lyrics is, 0 to 100 |
-| `lyrics_cover_color` | `false` | Tint sung words with colours from the cover |
-| `lyrics_background_pop` | `true` | Show secondary lines while active and tuck them away afterwards |
+| `lyrics_background_pop` | `false` | Show background vocals while their lead is sung, then tuck them away |
+| `lyrics_smooth_scroll` | `false` | Move between lines with a spring instead of the browser glide |
+| `lyrics_early_scroll_ms` | `0` | Pick the next line this many milliseconds early, 0 to 800 |
+| `lyrics_defaults` | `1` | Which set of lyrics defaults the file has taken. Files from before the mobile renderer take them once |
 | `spicy_lyrics_key` | none | Developer key for word-synced lyrics from Spicy Lyrics |
 | `lyrics_milkdrop` | `false` | MilkDrop rather than the cover's art behind full screen lyrics |
 | `milkdrop_size` | `640, 480` | The MilkDrop window's size in points |

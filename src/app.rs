@@ -666,7 +666,9 @@ pub struct App {
     uploaded_covers: std::collections::HashMap<String, crate::playlist_cover::PendingCover>,
     pub show_queue_panel: bool,
     pub show_lyrics_panel: bool,
-    pub lyrics_card_collapsed: bool,
+    /// The Now Playing view takes the right panel's place, so at most one of
+    /// the Queue, Lyrics, Now Playing and Friend activity is open.
+    pub show_now_playing_panel: bool,
     /// Friend activity takes the right panel's place, so at most one of the
     /// Queue, Lyrics and Friend activity is open.
     pub show_friends_panel: bool,
@@ -1399,7 +1401,7 @@ impl App {
             uploaded_covers: Default::default(),
             show_queue_panel: session.queue_open.unwrap_or(false),
             show_lyrics_panel: false,
-            lyrics_card_collapsed: false,
+            show_now_playing_panel: false,
             show_friends_panel: false,
             friends: Loadable::NotLoaded,
             friends_in_flight: false,
@@ -12489,7 +12491,7 @@ impl App {
     fn leave_lyrics_fullscreen(&mut self, ctx: &egui::Context) {
         self.end_immersive();
         if let Some(was_fullscreen) = self.lyrics_fullscreen.take() {
-            if !self.settings.lyrics_windowed_fullscreen {
+            if !self.settings.lyrics_windowed_fullscreen && !self.settings.lyrics_split_view {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(was_fullscreen));
                 if self.lyrics_restore_maximized {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
@@ -12595,7 +12597,15 @@ impl App {
             self.supersede_play_search();
         }
         match action {
-            Action::Open(page) => self.open(page),
+            Action::Open(page) => {
+                // A page chosen from the split view's sidebar is the person
+                // leaving the lyrics for that page, not a hidden page change
+                // behind them.
+                if self.settings.lyrics_split_view && self.lyrics_fullscreen.is_some() {
+                    self.leave_lyrics_fullscreen(ctx);
+                }
+                self.open(page);
+            }
             Action::OpenSongRadio { uri, track } => self.open_song_radio(&uri, &track),
             Action::PrepareTint(url) => {
                 if self.settings.accent_from_art {
@@ -12617,6 +12627,9 @@ impl App {
             }
             Action::Back => {
                 if self.can_go_back() {
+                    if self.settings.lyrics_split_view && self.lyrics_fullscreen.is_some() {
+                        self.leave_lyrics_fullscreen(ctx);
+                    }
                     self.pending_link = None;
                     self.linked_song = None;
                     self.prerelease_request = None;
@@ -12630,6 +12643,9 @@ impl App {
             }
             Action::Forward => {
                 if self.can_go_forward() {
+                    if self.settings.lyrics_split_view && self.lyrics_fullscreen.is_some() {
+                        self.leave_lyrics_fullscreen(ctx);
+                    }
                     self.pending_link = None;
                     self.linked_song = None;
                     self.prerelease_request = None;
@@ -13446,6 +13462,7 @@ impl App {
                 self.show_queue_panel = !self.show_queue_panel;
                 if self.show_queue_panel {
                     self.show_lyrics_panel = false;
+                    self.show_now_playing_panel = false;
                     self.show_friends_panel = false;
                     self.refresh_queue(true);
                 }
@@ -13455,38 +13472,44 @@ impl App {
                 self.show_lyrics_panel = !self.show_lyrics_panel;
                 if self.show_lyrics_panel {
                     self.show_queue_panel = false;
+                    self.show_now_playing_panel = false;
                     self.show_friends_panel = false;
                     self.lyrics_following = true;
                     self.request_lyrics();
                 }
             }
-            Action::ToggleLyricsCard => {
-                self.lyrics_card_collapsed = !self.lyrics_card_collapsed;
-                if !self.lyrics_card_collapsed {
-                    // Reopening gives the body a clean follow: its scroll area
-                    // may have been away for many frames, so it must centre on
-                    // the sung line again.
-                    self.lyrics_line_shown = None;
+            Action::ToggleNowPlayingPanel => {
+                // In the split view the Now Playing column is part of the
+                // page, so its button only folds it away; anywhere else the
+                // panel lives beside the pages, not over full screen lyrics.
+                if !(self.settings.lyrics_split_view && self.lyrics_fullscreen.is_some()) {
+                    self.leave_lyrics_fullscreen(ctx);
                 }
-                // The card changes its whole layout. Draw the new state now,
-                // even when the song is paused and nothing else asks for a
-                // frame.
-                ctx.request_repaint();
+                self.show_now_playing_panel = !self.show_now_playing_panel;
+                if self.show_now_playing_panel {
+                    self.show_queue_panel = false;
+                    self.show_lyrics_panel = false;
+                    self.show_friends_panel = false;
+                }
             }
             Action::ToggleFriendsPanel => {
                 self.show_friends_panel = !self.show_friends_panel;
                 if self.show_friends_panel {
                     self.show_queue_panel = false;
                     self.show_lyrics_panel = false;
+                    self.show_now_playing_panel = false;
                     self.refresh_friends();
                 }
             }
             Action::SetLyricsFullscreen(fullscreen) => {
                 if fullscreen && self.lyrics_fullscreen.is_none() {
-                    self.lyrics_fullscreen =
-                        Some(self.lyrics_fullscreen_restoring.take().unwrap_or_else(|| {
+                    self.lyrics_fullscreen = Some(if self.settings.lyrics_split_view {
+                        false
+                    } else {
+                        self.lyrics_fullscreen_restoring.take().unwrap_or_else(|| {
                             ctx.input(|input| input.viewport().fullscreen.unwrap_or(false))
-                        }));
+                        })
+                    });
                     #[cfg(windows)]
                     {
                         // Winit's undecorated maximized Windows client area is
@@ -13503,14 +13526,23 @@ impl App {
                     // The queue flag is preserved: an open side panel becomes
                     // the fullscreen queue column instead of vanishing. The
                     // lyrics panel yields, so normal mode never shows both.
-                    if !self.show_queue_panel {
+                    // The split view's column is the Now Playing view instead,
+                    // so it takes the panels' place there.
+                    if self.settings.lyrics_split_view {
+                        self.show_queue_panel = false;
+                        self.show_lyrics_panel = false;
+                        self.show_friends_panel = false;
+                        self.show_now_playing_panel = true;
+                    } else if !self.show_queue_panel {
                         self.show_lyrics_panel = true;
                     }
                     self.show_friends_panel = false;
                     self.lyrics_following = true;
                     self.lyrics_line_shown = None;
                     self.request_lyrics();
-                    if !self.settings.lyrics_windowed_fullscreen {
+                    if self.settings.lyrics_split_view {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+                    } else if !self.settings.lyrics_windowed_fullscreen {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
                     }
                 } else if !fullscreen {
@@ -14898,7 +14930,10 @@ impl App {
             self.lyrics_fullscreen_restoring = None;
             self.lyrics_restore_maximized = false;
         }
-        if self.lyrics_fullscreen.is_some() && !self.settings.lyrics_windowed_fullscreen {
+        if self.lyrics_fullscreen.is_some()
+            && !self.settings.lyrics_windowed_fullscreen
+            && !self.settings.lyrics_split_view
+        {
             if ctx.input(|input| input.viewport().fullscreen.unwrap_or(false)) {
                 self.lyrics_fullscreen_seen = true;
             } else if self.lyrics_fullscreen_seen {
@@ -24098,18 +24133,31 @@ mod tests {
         app.backend.shutdown();
     }
 
+    /// The Now Playing view takes the right panel's place like the others:
+    /// opening it closes them, and opening any of them closes it. Inside the
+    /// split view it only folds its column away.
     #[test]
-    fn toggle_lyrics_card_toggles_collapsed_state() {
+    fn now_playing_swaps_places_with_the_other_panels() {
         let ctx = egui::Context::default();
-        let mut app = test_app("toggle-lyrics-card");
-        assert!(!app.lyrics_card_collapsed);
-        app.lyrics_line_shown = Some(Some(4));
-        app.apply(Action::ToggleLyricsCard, &ctx);
-        assert!(app.lyrics_card_collapsed);
-        assert_eq!(app.lyrics_line_shown, Some(Some(4)));
-        app.apply(Action::ToggleLyricsCard, &ctx);
-        assert!(!app.lyrics_card_collapsed);
-        assert_eq!(app.lyrics_line_shown, None);
+        let mut app = test_app("now-playing-panel-swap");
+        app.show_queue_panel = true;
+        app.apply(Action::ToggleNowPlayingPanel, &ctx);
+        assert!(app.show_now_playing_panel && !app.show_queue_panel);
+        app.apply(Action::ToggleLyricsPanel, &ctx);
+        assert!(app.show_lyrics_panel && !app.show_now_playing_panel);
+        app.apply(Action::ToggleNowPlayingPanel, &ctx);
+        assert!(app.show_now_playing_panel && !app.show_lyrics_panel);
+        app.apply(Action::ToggleFriendsPanel, &ctx);
+        assert!(app.show_friends_panel && !app.show_now_playing_panel);
+        app.apply(Action::ToggleFriendsPanel, &ctx);
+        app.apply(Action::ToggleNowPlayingPanel, &ctx);
+        assert!(app.show_now_playing_panel);
+        // In the split view the column is part of the page: the button folds
+        // it without leaving the lyrics.
+        app.settings.lyrics_split_view = true;
+        app.lyrics_fullscreen = Some(false);
+        app.apply(Action::ToggleNowPlayingPanel, &ctx);
+        assert!(!app.show_now_playing_panel && app.lyrics_fullscreen.is_some());
         app.backend.shutdown();
     }
 
@@ -24171,8 +24219,10 @@ mod tests {
                 assert!(shown_at.is_none(), "it stays once shown, gone at {width}");
             }
         }
-        assert!(button_at.is_some_and(|width| width > 760.0 && width <= 840.0));
-        assert!(shown_at.is_some_and(|width| Some(width) > button_at && width <= 920.0));
+        // The Now Playing button sits beside Lyrics, so the full screen
+        // button needs another button's width before it fits.
+        assert!(button_at.is_some_and(|width| width > 760.0 && width <= 880.0));
+        assert!(shown_at.is_some_and(|width| Some(width) > button_at && width <= 960.0));
         app.backend.shutdown();
     }
 

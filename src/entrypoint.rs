@@ -99,6 +99,17 @@ struct Cli {
     #[cfg(feature = "demo")]
     #[arg(long, value_name = "X,Y", value_parser = parse_demo_point, conflicts_with = "demo_drag")]
     demo_click: Option<egui::Pos2>,
+
+    /// Write PNG frames of the demo to this directory while it runs, with
+    /// seeks through the sample lyrics, then exit. For checking motion.
+    #[cfg(feature = "demo")]
+    #[arg(long, value_name = "DIR", conflicts_with = "demo_shot")]
+    demo_filmstrip: Option<std::path::PathBuf>,
+
+    /// How long `--demo-filmstrip` runs, in milliseconds.
+    #[cfg(feature = "demo")]
+    #[arg(long, value_name = "MS", default_value_t = 4500)]
+    demo_filmstrip_ms: u64,
 }
 
 /// Remote control of the running instance, for Raycast scripts, launchers,
@@ -373,7 +384,9 @@ pub(crate) fn run() -> eframe::Result<()> {
     // folder of its own it would write them into the real profile, where
     // they would pass for the user's history.
     #[cfg(feature = "demo")]
-    let cli = if (cli.demo || cli.demo_shot.is_some()) && cli.demo_data.is_none() {
+    let cli = if (cli.demo || cli.demo_shot.is_some() || cli.demo_filmstrip.is_some())
+        && cli.demo_data.is_none()
+    {
         Cli {
             demo_data: Some(
                 std::env::temp_dir().join(format!("spotifast-demo-{}", std::process::id())),
@@ -409,7 +422,7 @@ pub(crate) fn run() -> eframe::Result<()> {
     // A second launch surfaces the instance already running instead of
     // starting a rival one. Held for the lifetime of the process.
     #[cfg(feature = "demo")]
-    let demo = cli.demo || cli.demo_shot.is_some();
+    let demo = cli.demo || cli.demo_shot.is_some() || cli.demo_filmstrip.is_some();
     #[cfg(feature = "demo")]
     let guarded = !demo;
     #[cfg(not(feature = "demo"))]
@@ -508,7 +521,7 @@ pub(crate) fn run() -> eframe::Result<()> {
         options.autostart = false;
     }
     #[cfg(feature = "demo")]
-    if cli.demo_shot.is_some() {
+    if cli.demo_shot.is_some() || cli.demo_filmstrip.is_some() {
         options = app::AppOptions {
             media_controls: false,
             restore_sign_in: false,
@@ -596,6 +609,11 @@ pub(crate) fn run() -> eframe::Result<()> {
             click: true,
         }));
     #[cfg(feature = "demo")]
+    let filmstrip =
+        std::sync::Arc::new(std::sync::Mutex::new(cli.demo_filmstrip.clone().map(
+            |dir| Filmstrip::new(dir, std::time::Duration::from_millis(cli.demo_filmstrip_ms)),
+        )));
+    #[cfg(feature = "demo")]
     let demo_inner = cli.demo_size;
     #[cfg(feature = "demo")]
     spotifast::window::set_fixed_size(demo_inner.is_some());
@@ -649,6 +667,8 @@ pub(crate) fn run() -> eframe::Result<()> {
         // fastframe-graphics says why in a native dialog rather than letting
         // the app quit without a word.
         let mut options = Some(options);
+        #[cfg(feature = "demo")]
+        let creator_filmstrip = filmstrip.clone();
         let mut creator: Option<eframe::AppCreator<'_>> = Some(Box::new(move |cc| {
             if let Some(gl) = &cc.gl {
                 use eframe::glow::HasContext;
@@ -717,11 +737,14 @@ pub(crate) fn run() -> eframe::Result<()> {
             };
             Ok(Box::new(Shell {
                 app,
+                egui_ctx: cc.egui_ctx.clone(),
                 recovery_checked: false,
                 #[cfg(windows)]
                 thumbbar,
                 #[cfg(feature = "demo")]
                 shot: creator_shot.clone(),
+                #[cfg(feature = "demo")]
+                filmstrip: creator_filmstrip,
                 #[cfg(feature = "demo")]
                 drag: demo_drag,
                 stalls: fastframe_shell::StallWatch::default(),
@@ -1292,6 +1315,9 @@ mod native_window_tests {
 /// and, when the window goes away, hands the state back for the next window.
 struct Shell {
     app: fastframe_shell::Held<app::App>,
+    /// The context this window draws into. Kept so the lyrics renderer can be
+    /// freed with its own graphics context when the window goes away.
+    egui_ctx: egui::Context,
     /// Whether this window's first frame checked that a monitor shows it.
     recovery_checked: bool,
     #[cfg(windows)]
@@ -1299,6 +1325,9 @@ struct Shell {
     /// A pending `--demo-shot` capture, if this is a screenshot run.
     #[cfg(feature = "demo")]
     shot: Option<Shot>,
+    /// A pending `--demo-filmstrip` run, if this is a motion capture.
+    #[cfg(feature = "demo")]
+    filmstrip: std::sync::Arc<std::sync::Mutex<Option<Filmstrip>>>,
     /// A drag held for `--demo-drag`, if this run shows one.
     #[cfg(feature = "demo")]
     drag: Option<DemoDrag>,
@@ -1412,6 +1441,8 @@ impl Shell {
             .sync(app.thumb_state(ctx.system_theme() != Some(egui::Theme::Light)));
         #[cfg(feature = "demo")]
         self.drive_shot(ctx);
+        #[cfg(feature = "demo")]
+        self.drive_filmstrip(ctx);
     }
 
     fn draw(&mut self, ui: &mut egui::Ui) {
@@ -1495,6 +1526,12 @@ struct Shot {
 #[cfg(feature = "demo")]
 impl Shell {
     fn drive_shot(&mut self, ctx: &egui::Context) {
+        // The sample song waits where the fixture put it, so the still shows
+        // the words and the time it was set up for. (Without this, cover
+        // loading and the shot's delay carried it to the next line.)
+        if self.shot.is_some() {
+            self.app.hold_demo_playhead();
+        }
         let Some(shot) = self.shot.as_mut() else {
             return;
         };
@@ -1533,6 +1570,136 @@ impl Shell {
         }
         self.shot = None;
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+}
+
+/// A motion capture: PNG frames while the demo runs, as often as the frame
+/// readback allows, seeking through the sample lyrics to make the view scroll
+/// and settle. Frames are encoded on their own thread so the capture keeps
+/// the sample's pace.
+#[cfg(feature = "demo")]
+struct Filmstrip {
+    dir: std::path::PathBuf,
+    length: std::time::Duration,
+    start: Option<std::time::Instant>,
+    next: Option<std::time::Instant>,
+    asked: bool,
+    frame: u32,
+    seeks: usize,
+    sender: Option<std::sync::mpsc::SyncSender<(std::path::PathBuf, image::RgbaImage)>>,
+    writer: Option<std::thread::JoinHandle<()>>,
+}
+
+#[cfg(feature = "demo")]
+impl Filmstrip {
+    /// Where the film seeks, and to what share of the song, in milliseconds
+    /// from its start: a jump to another verse, then back.
+    const SEEKS: [(u64, f32); 3] = [(2_500, 0.42), (4_000, 0.68), (5_500, 0.22)];
+
+    fn new(dir: std::path::PathBuf, length: std::time::Duration) -> Self {
+        if let Err(error) = std::fs::create_dir_all(&dir) {
+            log::error!("could not make {}: {error}", dir.display());
+        }
+        let (sender, frames) =
+            std::sync::mpsc::sync_channel::<(std::path::PathBuf, image::RgbaImage)>(6);
+        let writer = std::thread::Builder::new()
+            .name("demo-filmstrip".into())
+            .spawn(move || {
+                while let Ok((path, image)) = frames.recv() {
+                    if let Err(error) = image.save(&path) {
+                        log::error!("could not write {}: {error}", path.display());
+                    }
+                }
+            })
+            .expect("the filmstrip writer");
+        Self {
+            dir,
+            length,
+            start: None,
+            next: None,
+            asked: false,
+            frame: 0,
+            seeks: 0,
+            sender: Some(sender),
+            writer: Some(writer),
+        }
+    }
+
+    /// Saves what is queued and stops the writer.
+    fn finish(mut self) {
+        self.sender = None;
+        if let Some(writer) = self.writer.take() {
+            let _ = writer.join();
+        }
+    }
+}
+
+#[cfg(feature = "demo")]
+impl Shell {
+    fn drive_filmstrip(&mut self, ctx: &egui::Context) {
+        let slot = self.filmstrip.clone();
+        let mut guard = slot.lock().expect("filmstrip");
+        let Some(film) = guard.as_mut() else {
+            return;
+        };
+        // The sample waits where the fixture put it; the seeks below are what
+        // move it, so the frames show scrolling rather than startup drift.
+        self.app.hold_demo_playhead();
+        ctx.request_repaint();
+        let now = std::time::Instant::now();
+        let start = *film.start.get_or_insert(now);
+        if now >= start + film.length {
+            drop(guard);
+            let film = self.filmstrip.lock().expect("filmstrip").take();
+            if let Some(film) = film {
+                film.finish();
+            }
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
+        let elapsed = now.duration_since(start).as_millis() as u64;
+        while film.seeks < Filmstrip::SEEKS.len() && elapsed >= Filmstrip::SEEKS[film.seeks].0 {
+            if let Some(now) = self.app.now_playing() {
+                let at = (now.duration_ms as f32 * Filmstrip::SEEKS[film.seeks].1) as u32;
+                self.app.actions.push(spotifast::model::Action::Seek(at));
+            }
+            film.seeks += 1;
+        }
+        let next = film.next.get_or_insert(now);
+        if !film.asked && now >= *next {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
+            film.asked = true;
+            *next += std::time::Duration::from_millis(80);
+            if *next < now {
+                *next = now + std::time::Duration::from_millis(80);
+            }
+        }
+        let image = ctx.input(|input| {
+            input.events.iter().find_map(|event| match event {
+                egui::Event::Screenshot { image, .. } => Some(image.clone()),
+                _ => None,
+            })
+        });
+        let Some(image) = image.filter(|_| film.asked) else {
+            return;
+        };
+        film.asked = false;
+        let [width, height] = [image.size[0] as u32, image.size[1] as u32];
+        let pixels: Vec<u8> = image
+            .pixels
+            .iter()
+            .flat_map(|pixel| pixel.to_srgba_unmultiplied())
+            .collect();
+        let Some(buffer) = image::RgbaImage::from_raw(width, height, pixels) else {
+            log::error!("the frame buffer did not match {width}x{height}");
+            return;
+        };
+        let path = film.dir.join(format!("frame-{:03}.png", film.frame));
+        film.frame += 1;
+        if let Some(sender) = &film.sender {
+            // A slow encoder drops a frame rather than delaying the sample.
+            let _ = sender.try_send((path, buffer));
+        }
     }
 }
 
@@ -1583,7 +1750,20 @@ impl eframe::App for Shell {
         }
     }
 
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+    fn on_exit(&mut self, gl: Option<&eframe::glow::Context>) {
+        #[cfg(feature = "demo")]
+        {
+            let film = self.filmstrip.lock().expect("filmstrip").take();
+            if let Some(film) = film {
+                film.finish();
+            }
+        }
+        // The lyrics shaders, buffers and blur targets belong to this
+        // window's context. Free them while it is still current instead of
+        // leaving them to a context a tray-hidden app may keep alive.
+        if let Some(gl) = gl {
+            spotifast::release_lyrics_gpu(&self.egui_ctx, gl);
+        }
         let app = &mut *self.app;
         app.save_state();
         app.flush_files();

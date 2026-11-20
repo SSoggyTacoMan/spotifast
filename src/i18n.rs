@@ -366,10 +366,10 @@ mod tests {
     #[test]
     fn contextual_messages_do_not_leak_into_other_meanings() {
         let source = "Follow";
-        let context = "lyrics";
+        let context = "artist";
         assert_eq!(pgettext(Locale::German, context, source), "Folgen");
-        assert_eq!(pgettext(Locale::Japanese, context, source), "追従");
-        assert_eq!(pgettext(Locale::Korean, context, source), "따라가기");
+        assert_eq!(pgettext(Locale::Japanese, context, source), "フォロー");
+        assert_eq!(pgettext(Locale::Korean, context, source), "팔로우");
         assert_eq!(pgettext(Locale::English, context, source), source);
         assert_eq!(pgettext(Locale::German, "no such context", source), source);
         assert_eq!(gettext(Locale::German, source), source);

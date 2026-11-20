@@ -11,7 +11,7 @@ pub mod home;
 mod keys;
 pub mod library;
 pub mod login;
-mod lyrics;
+pub(crate) mod lyrics;
 pub mod new_releases;
 pub mod player_bar;
 mod prerelease;
@@ -93,7 +93,17 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     }
     player_bar::show(app, ui);
     if app.lyrics_fullscreen.is_some() {
-        lyrics::fullscreen(app, ui);
+        if app.settings.lyrics_split_view {
+            if app.settings.sidebar_visible {
+                sidebar::show(app, ui);
+            }
+            if app.show_now_playing_panel {
+                lyrics::now_playing_side_panel(app, ui);
+            }
+            lyrics::split_page(app, ui);
+        } else {
+            lyrics::fullscreen(app, ui);
+        }
     } else {
         if app.settings.sidebar_visible {
             sidebar::show(app, ui);
@@ -106,6 +116,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         }
         if app.show_friends_panel {
             friends::side_panel(app, ui);
+        }
+        if app.show_now_playing_panel {
+            lyrics::now_playing_side_panel(app, ui);
         }
         central(app, ui);
     }
@@ -146,7 +159,7 @@ fn keep_room_for_panels(app: &App, ctx: &Context) {
     if crate::window::fixed_size() {
         return;
     }
-    let panels = app.lyrics_fullscreen.is_none();
+    let panels = app.lyrics_fullscreen.is_none() || app.settings.lyrics_split_view;
     let sidebar = if panels && app.settings.sidebar_visible {
         if app.settings.sidebar_rail {
             sidebar::RAIL_MIN_WIDTH
@@ -159,7 +172,11 @@ fn keep_room_for_panels(app: &App, ctx: &Context) {
     let width = main_min_width(
         topbar::least_width(ctx),
         sidebar,
-        panels && (app.show_queue_panel || app.show_lyrics_panel || app.show_friends_panel),
+        panels
+            && (app.show_queue_panel
+                || app.show_lyrics_panel
+                || app.show_friends_panel
+                || app.show_now_playing_panel),
     )
     .round();
     let id = Id::new("main-min-width");
@@ -612,15 +629,18 @@ pub(super) struct WindowControlsReservation {
     pub topbar_top: f32,
     pub queue_top: f32,
     pub lyrics_top: f32,
+    pub now_playing_top: f32,
 }
 
 /// The caption buttons on the right belong to the outermost header: the
-/// queue's or the lyrics' when either panel is open, otherwise the top bar,
-/// beside its controls or above them when the page is too narrow.
+/// queue's, the lyrics', or the Now Playing view's when one of those panels
+/// is open, otherwise the top bar, beside its controls or above them when the
+/// page is too narrow.
 fn controls_reservation(
     footprint: fastframe_titlebar::Footprint,
     queue: bool,
     lyrics: bool,
+    now_playing: bool,
     topbar_width: f32,
 ) -> WindowControlsReservation {
     let mut space = WindowControlsReservation {
@@ -628,6 +648,7 @@ fn controls_reservation(
         topbar_top: 0.0,
         queue_top: 0.0,
         lyrics_top: 0.0,
+        now_playing_top: 0.0,
     };
     if footprint.right <= 0.0 {
         return space;
@@ -636,6 +657,8 @@ fn controls_reservation(
         space.queue_top = footprint.height;
     } else if lyrics {
         space.lyrics_top = footprint.height;
+    } else if now_playing {
+        space.now_playing_top = footprint.height;
     } else {
         let reserve = footprint.reserve(topbar_width, TOPBAR_MIN_CONTENT);
         space.topbar_width = reserve.inline_width;
@@ -661,12 +684,14 @@ pub(super) fn window_controls_reservation(
     ctx: &egui::Context,
     queue: bool,
     lyrics: bool,
+    now_playing: bool,
     topbar_width: f32,
 ) -> WindowControlsReservation {
     controls_reservation(
         fastframe_titlebar::footprint(ctx, theme::CUSTOM_TOP_BAR_HEIGHT),
         queue,
         lyrics,
+        now_playing,
         topbar_width,
     )
 }
@@ -785,40 +810,67 @@ mod window_chrome_tests {
 
     #[test]
     fn caption_space_belongs_to_the_outermost_header() {
-        let values = |footprint, queue, lyrics| {
-            let space = controls_reservation(footprint, queue, lyrics, f32::INFINITY);
+        let values = |footprint, queue, lyrics, now_playing| {
+            let space = controls_reservation(footprint, queue, lyrics, now_playing, f32::INFINITY);
             [
                 space.topbar_width,
                 space.topbar_top,
                 space.queue_top,
                 space.lyrics_top,
+                space.now_playing_top,
             ]
         };
         let [width, height] = [BUTTONS.right, BUTTONS.height];
-        assert_eq!(values(BUTTONS, false, false), [width, 0.0, 0.0, 0.0]);
-        assert_eq!(values(BUTTONS, true, false), [0.0, 0.0, height, 0.0]);
-        assert_eq!(values(BUTTONS, false, true), [0.0, 0.0, 0.0, height]);
-        assert_eq!(values(BUTTONS, true, true), [0.0, 0.0, height, 0.0]);
+        assert_eq!(
+            values(BUTTONS, false, false, false),
+            [width, 0.0, 0.0, 0.0, 0.0]
+        );
+        assert_eq!(
+            values(BUTTONS, true, false, false),
+            [0.0, 0.0, height, 0.0, 0.0]
+        );
+        assert_eq!(
+            values(BUTTONS, false, true, false),
+            [0.0, 0.0, 0.0, height, 0.0]
+        );
+        assert_eq!(
+            values(BUTTONS, false, false, true),
+            [0.0, 0.0, 0.0, 0.0, height]
+        );
+        assert_eq!(
+            values(BUTTONS, true, true, true),
+            [0.0, 0.0, height, 0.0, 0.0]
+        );
         // No buttons on the right: full screen, the native frame, macOS's
         // traffic lights, or a GNOME layout with them all on the left.
         let none = Footprint {
             left: 50.0,
             ..Footprint::default()
         };
-        for (queue, lyrics) in [(false, false), (true, false), (false, true)] {
-            assert_eq!(values(none, queue, lyrics), [0.0; 4]);
+        for (queue, lyrics, now_playing) in [
+            (false, false, false),
+            (true, false, false),
+            (false, true, false),
+            (false, false, true),
+        ] {
+            assert_eq!(values(none, queue, lyrics, now_playing), [0.0; 5]);
         }
     }
 
     #[test]
     fn minimum_windows_window_stacks_caption_space_above_the_topbar() {
         let available = 760.0 - 250.0;
-        let space = controls_reservation(BUTTONS, false, false, available);
+        let space = controls_reservation(BUTTONS, false, false, false, available);
         assert_eq!(space.topbar_width, 0.0);
         assert_eq!(space.topbar_top, BUTTONS.height);
 
-        let inline =
-            controls_reservation(BUTTONS, false, false, TOPBAR_MIN_CONTENT + BUTTONS.right);
+        let inline = controls_reservation(
+            BUTTONS,
+            false,
+            false,
+            false,
+            TOPBAR_MIN_CONTENT + BUTTONS.right,
+        );
         assert_eq!(inline.topbar_width, BUTTONS.right);
         assert_eq!(inline.topbar_top, 0.0);
     }

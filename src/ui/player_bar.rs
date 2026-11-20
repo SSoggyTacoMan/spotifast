@@ -941,8 +941,9 @@ fn transport(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>, region:
 }
 
 /// What the right of the bar always holds, in points: the volume slider and
-/// its button, the devices, queue and lyrics buttons, and the gaps.
-const EXTRAS_WIDTH: f32 = 92.0 + 4.0 * (18.0 + theme::ICON_BUTTON_PAD) + 4.0 * 6.0 + 4.0;
+/// its button, the devices, queue, lyrics and Now Playing buttons, and the
+/// gaps.
+const EXTRAS_WIDTH: f32 = 92.0 + 5.0 * (18.0 + theme::ICON_BUTTON_PAD) + 5.0 * 6.0 + 4.0;
 
 /// Whether the full screen button has room beside the rest, keeping clear of
 /// the transport, with `room` points to the right of it.
@@ -1101,6 +1102,22 @@ fn extras(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>, transport_
     .clicked()
     {
         app.actions.push(Action::ToggleLyricsPanel);
+    }
+    if theme::icon_button(
+        ui,
+        Icon::Disc,
+        18.0,
+        if app.show_now_playing_panel {
+            palette.accent
+        } else {
+            palette.secondary
+        },
+        palette.text,
+        &gettext(app.locale, "Now playing"),
+    )
+    .clicked()
+    {
+        app.actions.push(Action::ToggleNowPlayingPanel);
     }
     // The Listening activity button is the first to go in a narrow window,
     // so it never crowds the transport.
@@ -1309,7 +1326,7 @@ mod player_bar_tint_tests {
     /// A window too narrow for it loses the button, not the volume.
     #[test]
     fn the_full_screen_button_goes_when_the_bar_is_tight() {
-        assert!(full_screen_button_fits(320.0));
+        assert!(full_screen_button_fits(360.0));
         assert!(!full_screen_button_fits(200.0));
     }
 }

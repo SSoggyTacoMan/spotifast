@@ -73,13 +73,15 @@ and overrides both the setting and the system language:
 cargo run --features demo -- --demo --demo-language es
 cargo run --features demo -- --demo --demo-language es --demo-show light --demo-size 760x620
 cargo run --features demo -- --demo --demo-language de-DE --demo-show playing-next
-cargo run --features demo -- --demo --demo-language ja --demo-show lyrics-follow
+cargo run --features demo -- --demo --demo-language ja --demo-show lyrics
 ```
 
 Check a narrow and a normal window, light and dark themes, keyboard navigation,
 and screen-reader names. `--demo-shot PATH` saves the preview and exits. When automating screenshots, give the process
 its own XDG config, data and state directories on Linux so framework window and
-scroll state do not carry between captures.
+scroll state do not carry between captures. `--demo-filmstrip DIR` writes PNG
+frames while seeking through the sample lyrics, then exits, for checking motion
+such as scrolling, karaoke fills and the lyrics backdrop. It implies `--demo`.
 
 Panel fixtures also include `queue-empty`, `queue-loading`, `queue-error`,
 `recents-empty`, `recents-loading`, `recents-error`, `lyrics-empty`,
@@ -92,8 +94,8 @@ in full screen, for example `--demo-show lyrics-fullscreen,lyrics-error`.
 Maintainers mark source phrases with `gettext(locale, "English text")` and whole
 counted phrases with `ngettext(locale, "Singular", "Plural", count)`. Use
 `pgettext(locale, "context", "English text")` when the same English word has
-different meanings. For example, `Follow` in the `lyrics` context follows the
-current lyric line, so its translation can differ from following an artist.
+different meanings. For example, `Expand` in the `lyrics` context opens the
+lyrics card, so its translation can differ from expanding a folder.
 Interpolate with named placeholders, such as `gettext(locale, "Added {name}")`
 followed by `.replace("{name}", &name)`, and explain each one in a
 `// Translators:` comment above the phrase. Add any

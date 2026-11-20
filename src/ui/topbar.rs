@@ -202,6 +202,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         ui.ctx(),
         app.show_queue_panel || app.show_friends_panel,
         app.show_lyrics_panel,
+        app.show_now_playing_panel,
         width,
     );
     if !app.settings.sidebar_visible {

@@ -4,9 +4,9 @@ default-run = "spotifast"
 version = "0.17.1"
 edition = "2024"
 rust-version = "1.98"
-license = "MIT"
+license = "AGPL-3.0-only"
 description = "A native Spotify client"
-repository = "https://github.com/crmne/spotifast"
+repository = "https://github.com/SSoggyTacoMan/spotifast"
 keywords = ["spotify", "music", "egui", "librespot", "player"]
 categories = ["multimedia::audio"]
 
@@ -19,6 +19,10 @@ name = "spotifast"
 path = "src/spotifast.rs"
 
 [dependencies]
+# Spotify Canvas is a short H.264 loop. OpenH264 decodes it and mp4 demuxes
+# the track; both build from source and need no system media libraries.
+mp4 = "0.14"
+openh264 = "0.9"
 anyhow = "1"
 thiserror = "2"
 clap = { version = "4.5", features = ["derive"] }
@@ -196,6 +200,8 @@ urlencoding = "2"
 jiff = "0.2"
 mdns-sd = "0.21"
 unicode-bidi = "0.3"
+# Grapheme clusters, so a held word splits into the letters a reader sees.
+unicode-segmentation = "1"
 hmac = "0.12"
 pbkdf2 = "0.12"
 aes = "0.8"
@@ -380,3 +386,8 @@ librespot-metadata = { git = "https://github.com/crmne/librespot", rev = "3ba977
 librespot-oauth = { git = "https://github.com/crmne/librespot", rev = "3ba977f1f918582edce566cfc16617f8eccdfb1e" }
 librespot-playback = { git = "https://github.com/crmne/librespot", rev = "3ba977f1f918582edce566cfc16617f8eccdfb1e" }
 librespot-protocol = { git = "https://github.com/crmne/librespot", rev = "3ba977f1f918582edce566cfc16617f8eccdfb1e" }
+
+# The H.264 decoder is C; without optimization a development build spends
+# seconds on one Canvas. Release already optimizes it.
+[profile.dev.package.openh264-sys2]
+opt-level = 3

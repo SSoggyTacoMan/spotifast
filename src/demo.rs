@@ -1117,6 +1117,20 @@ fn play_here(app: &mut App) {
     app.local.position_ms = now.as_ref().map_or(0, |now| now.position_ms);
 }
 
+#[cfg(feature = "demo")]
+impl App {
+    /// A capture run shows the sample at the moment its fixture chose: the
+    /// remote snapshot's age is reset each frame, so starting the window and
+    /// loading the cover do not carry the song past the words the still is
+    /// meant to show. The shot and the lyrics then agree on the time.
+    pub fn hold_demo_playhead(&mut self) {
+        if let Some(remote) = &mut self.remote {
+            remote.received_at = Instant::now();
+        }
+        self.local.position_at = None;
+    }
+}
+
 /// Half a second of stereo sound shaped like a busy mix, the same every
 /// time: a bass line, chords and their overtones at uneven levels up
 /// through the mids and highs, a bright hi-hat hiss and pink noise
@@ -1595,8 +1609,7 @@ pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
                 Page::Show(id) => app.show_pages.get_mut(&id).unwrap().show = Loadable::Loading,
                 _ => {}
             },
-            "lyrics-follow"
-            | "lyrics-empty"
+            "lyrics-empty"
             | "lyrics-loading"
             | "lyrics-error"
             | "lyrics-instrumental"
@@ -1618,6 +1631,8 @@ pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
                     app.remote = None;
                 }
             }
+            // The Now Playing view beside a page.
+            "now-playing" => app.show_now_playing_panel = true,
             "devices" => app.show_devices = true,
             // Home while Spotify has yet to answer for its shelves.
             "home-loading" => {
@@ -1975,6 +1990,7 @@ pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
             | "lyrics-interlude"
             | "lyrics-spicy"
             | "lyrics-minimal"
+            | "lyrics-canvas"
             | "lyrics-now-playing"
             | "lyrics-now-playing-open"
             | "lyrics-now-playing-narrow"
@@ -1993,11 +2009,27 @@ pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
                 app.lyrics = Loadable::Loaded(Some(lyrics));
                 app.lyrics_following = true;
                 app.show_lyrics_panel = true;
+                // A real track with a Spotify Canvas, for checking the moving
+                // background. The sample words and cover stay fake.
+                if surface == "lyrics-canvas" {
+                    const CANVAS_TRACK: &str = "4LRPiXqCikLlN15c3yImP7";
+                    app.settings.lyrics_split_view = true;
+                    app.lyrics_fullscreen = Some(false);
+                    app.show_now_playing_panel = true;
+                    if let Some(remote) = &mut app.remote
+                        && let Some(PlayableItem::Track(track)) = &mut remote.state.item
+                    {
+                        track.id = Some(CANVAS_TRACK.into());
+                        track.uri = format!("spotify:track:{CANVAS_TRACK}");
+                    }
+                }
                 // Sit inside the sung line, so a still shot shows the
                 // karaoke fill part way through a word.
                 if let Some(remote) = &mut app.remote {
                     remote.state.progress_ms = Some(80_400);
                 }
+                // The four panel shots: normal and narrow, each with the
+                // song kept in brief above the words or with the words alone.
                 if matches!(
                     surface,
                     "lyrics-now-playing"
@@ -2005,43 +2037,33 @@ pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
                         | "lyrics-now-playing-narrow"
                         | "lyrics-now-playing-open-narrow"
                 ) {
-                    app.settings
-                        .apply_lyrics_style(crate::settings::LyricsStyle::AppleMusic);
                     app.settings.lyrics_width = if surface.contains("narrow") {
                         280.0
                     } else {
                         360.0
                     };
+                    app.settings.lyrics_now_playing_header = !surface.contains("open");
                     app.local.position_ms = 80_400;
                     app.local.position_at = None;
                     if let Some(remote) = &mut app.remote {
                         remote.state.progress_ms = Some(80_400);
                     }
-                    app.lyrics_card_collapsed =
-                        matches!(surface, "lyrics-now-playing" | "lyrics-now-playing-narrow");
                 }
                 if surface == "lyrics-interlude" {
-                    app.settings
-                        .apply_lyrics_style(crate::settings::LyricsStyle::AppleMusic);
                     app.settings.lyrics_width = 360.0;
                     app.local.position_ms = 82_500;
                     app.local.position_at = None;
-                    app.lyrics_card_collapsed = true;
                     if let Some(remote) = &mut app.remote {
                         remote.state.progress_ms = Some(82_500);
                     }
                 }
                 if matches!(surface, "lyrics-spicy" | "lyrics-minimal") {
-                    let style = if surface == "lyrics-spicy" {
-                        crate::settings::LyricsStyle::Spicy
-                    } else {
-                        crate::settings::LyricsStyle::Minimal
-                    };
-                    app.settings.apply_lyrics_style(style);
+                    if surface == "lyrics-minimal" {
+                        app.settings.lyrics_style = crate::settings::LyricsStyle::Bloom;
+                    }
                     app.settings.lyrics_width = 360.0;
                     app.local.position_ms = 80_400;
                     app.local.position_at = None;
-                    app.lyrics_card_collapsed = true;
                     if let Some(remote) = &mut app.remote {
                         remote.state.progress_ms = Some(80_400);
                     }
@@ -3121,8 +3143,8 @@ mod tests {
     }
 
     #[test]
-    fn translated_lyrics_controls_keep_follow_retry_and_fullscreen_actions() {
-        use crate::i18n::{Locale, gettext, pgettext};
+    fn translated_lyrics_controls_keep_retry_and_fullscreen_actions() {
+        use crate::i18n::{Locale, gettext};
         use clap::ValueEnum;
         use egui::accesskit::{Action as AccessibleAction, Role};
 
@@ -3132,17 +3154,7 @@ mod tests {
             app.show_lyrics_panel = true;
             app.lyrics_uri = app.now_playing().map(|now| now.uri);
             app.lyrics = Loadable::Loaded(Some(sample_lyrics()));
-            app.lyrics_following = false;
             accessible_frame(&ctx, &mut app, vec![]);
-            let tree = accessible_frame(&ctx, &mut app, vec![]);
-            let follow =
-                accessible_node(&tree, &pgettext(locale, "lyrics", "Follow"), Role::Button);
-            accessible_frame(
-                &ctx,
-                &mut app,
-                vec![accessible_action(follow, AccessibleAction::Click, None)],
-            );
-            assert!(app.lyrics_following);
             let tree = accessible_frame(&ctx, &mut app, vec![]);
             let expand =
                 accessible_node(&tree, &gettext(locale, "Full screen lyrics"), Role::Button);
@@ -3152,16 +3164,6 @@ mod tests {
                 vec![accessible_action(expand, AccessibleAction::Click, None)],
             );
             assert!(app.lyrics_fullscreen.is_some());
-            app.lyrics_following = false;
-            let tree = accessible_frame(&ctx, &mut app, vec![]);
-            let follow =
-                accessible_node(&tree, &pgettext(locale, "lyrics", "Follow"), Role::Button);
-            accessible_frame(
-                &ctx,
-                &mut app,
-                vec![accessible_action(follow, AccessibleAction::Click, None)],
-            );
-            assert!(app.lyrics_following);
             let tree = accessible_frame(&ctx, &mut app, vec![]);
             let leave = accessible_node(
                 &tree,
@@ -3242,7 +3244,7 @@ mod tests {
                     ),
                     (
                         Loadable::Loaded(Some(sample_lyrics())),
-                        vec![sample_lyrics().lines[0].text.clone()],
+                        vec!["But the night is wide and the road is long".to_owned()],
                     ),
                 ] {
                     app.lyrics = state;
@@ -5311,40 +5313,16 @@ mod tests {
         frame_events(ctx, app, Vec::new());
     }
 
-    /// Text drawn by one 1280x800 frame, with where it landed.
-    #[cfg(feature = "demo")]
-    fn screen_texts(ctx: &egui::Context, app: &mut App) -> Vec<(String, egui::Rect)> {
-        let mut output = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(1280.0, 800.0),
-                )),
-                ..Default::default()
-            },
-            |ui| app.frame_ui(ui),
-        );
-        output.textures_delta.clear();
-        fn walk(shape: &egui::epaint::Shape, out: &mut Vec<(String, egui::Rect)>) {
-            match shape {
-                egui::epaint::Shape::Text(text) => out.push((
-                    text.galley.job.text.clone(),
-                    text.galley.rect.translate(text.pos.to_vec2()),
-                )),
-                egui::epaint::Shape::Vec(shapes) => {
-                    shapes.iter().for_each(|shape| walk(shape, out))
-                }
-                _ => {}
-            }
-        }
-        let mut out = Vec::new();
-        for shape in &output.shapes {
-            walk(&shape.shape, &mut out);
-        }
-        out
+    /// The lyric lines the last frame painted on the graphics card, which
+    /// egui's own text shapes leave out.
+    fn lyric_lines(ctx: &egui::Context) -> Vec<(String, egui::Rect)> {
+        let lines = crate::ui::lyrics::drawn(ctx);
+        ctx.data_mut(|d| d.remove::<Vec<(String, egui::Rect)>>(egui::Id::new("lyrics-drawn")));
+        lines
     }
 
     /// Where a line of lyrics was drawn, in a frame of full screen lyrics.
+    #[cfg(feature = "milkdrop")]
     fn lyric_at(ctx: &egui::Context, app: &mut App, line: &str) -> egui::Pos2 {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
@@ -5355,15 +5333,9 @@ mod tests {
         };
         let mut output = ctx.run_ui(input, |ui| app.frame_ui(ui));
         output.textures_delta.clear();
-        output
-            .shapes
-            .iter()
-            .find_map(|shape| match &shape.shape {
-                egui::Shape::Text(text) if text.galley.job.text == line => {
-                    Some(text.pos + text.galley.size() / 2.0)
-                }
-                _ => None,
-            })
+        lyric_lines(ctx)
+            .into_iter()
+            .find_map(|(text, rect)| (text == line).then(|| rect.center()))
             .expect("the line is drawn")
     }
 
@@ -5397,7 +5369,7 @@ mod tests {
         };
         let mut output = ctx.run_ui(input, |ui| app.frame_ui(ui));
         output.textures_delta.clear();
-        let text = output
+        let mut text: Vec<String> = output
             .shapes
             .iter()
             .filter_map(|shape| match &shape.shape {
@@ -5405,6 +5377,7 @@ mod tests {
                 _ => None,
             })
             .collect();
+        text.extend(lyric_lines(ctx).into_iter().map(|(line, _)| line));
         (text, output.platform_output.cursor_icon)
     }
 
@@ -5432,7 +5405,8 @@ mod tests {
     #[test]
     fn the_cover_opens_milkdrop_alone_and_any_click_comes_back() {
         use egui::PointerButton::Primary;
-        const LINE: &str = "Streetlights blinking down the river road";
+        // The line being sung at the demo's 1:23.
+        const LINE: &str = "But the night is wide and the road is long";
         const BAR: &str = "1:23";
         let (ctx, mut app) = immersive_app("immersive");
         let cover = egui::pos2(288.0, 300.0);
@@ -5625,7 +5599,7 @@ mod tests {
 
         // A synced line still seeks and a plain one does nothing; neither
         // reaches the backdrop.
-        let line = lyric_at(&ctx, &mut app, "Streetlights blinking down the river road");
+        let line = lyric_at(&ctx, &mut app, "But the night is wide and the road is long");
         run(&ctx, &mut app, vec![egui::Event::PointerMoved(line)]);
         run(&ctx, &mut app, pointer_click(line, Primary));
         assert!(!app.milkdrop_behind_lyrics(), "a timed line");
@@ -5634,7 +5608,7 @@ mod tests {
         }
         app.lyrics_following = false;
         run(&ctx, &mut app, Vec::new());
-        let line = lyric_at(&ctx, &mut app, "Streetlights blinking down the river road");
+        let line = lyric_at(&ctx, &mut app, "But the night is wide and the road is long");
         run(&ctx, &mut app, vec![egui::Event::PointerMoved(line)]);
         run(&ctx, &mut app, pointer_click(line, Primary));
         assert!(!app.milkdrop_behind_lyrics(), "an untimed line");
@@ -6739,6 +6713,13 @@ mod tests {
         for shape in &output.shapes {
             walk(&shape.shape, &mut text);
         }
+        // The lyrics are painted on the graphics card, not as egui text.
+        let clip = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+        text.extend(
+            lyric_lines(ctx)
+                .into_iter()
+                .filter(|(_, rect)| rect.intersects(clip)),
+        );
         text
     }
 
@@ -9071,459 +9052,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    /// Collapsing keeps a live five-line stage, while reopening restores the
-    /// same full-height panel and followed scroll position through two cycles.
-    #[cfg(feature = "demo")]
-    #[test]
-    fn the_lyrics_card_collapses_to_a_preview_and_opens_again() {
-        let (ctx, mut app) = accessible_app("lyrics-card-collapse");
-        app.backend.set_offline(true);
-        app.show_lyrics_panel = true;
-        app.lyrics = Loadable::Loaded(Some(word_sample_lyrics()));
-        app.lyrics_following = true;
-        app.local.position_ms = 80_400;
-        app.local.position_at = None;
-        if let Some(remote) = &mut app.remote {
-            remote.state.progress_ms = Some(80_400);
-        }
-        let size = egui::vec2(1100.0, 900.0);
-        let texts = |app: &mut App| view_frame_sized(&ctx, app, Vec::new(), App::frame_ui, size);
-        let frame = |app: &mut App| {
-            view_frame_sized(&ctx, app, Vec::new(), App::frame_ui, size);
-        };
-        let click = |app: &mut App, at: egui::Pos2| {
-            view_frame_sized(
-                &ctx,
-                app,
-                pointer_click(at, egui::PointerButton::Primary),
-                App::frame_ui,
-                size,
-            );
-        };
-        let header_at = |drawn: &[(String, egui::Rect)]| {
-            drawn
-                .iter()
-                .filter(|(text, _)| text == "Lyrics")
-                .map(|(_, rect)| rect.center())
-                .max_by(|a, b| a.x.total_cmp(&b.x))
-                .expect("the card header is drawn")
-        };
-        let panel_height = || {
-            egui::containers::panel::PanelState::load(&ctx, egui::Id::new("lyrics-panel"))
-                .expect("the lyrics panel is drawn")
-                .outer_rect
-                .height()
-        };
-        // Let the opening scroll settle before reading the body.
-        for _ in 0..60 {
-            frame(&mut app);
-        }
-        let drawn = texts(&mut app);
-        assert!(
-            drawn.iter().any(|(text, _)| text == "night"),
-            "the open card shows the lyrics body: {drawn:?}"
-        );
-        let panel_height_at_rest = panel_height();
-        let followed_night_y = drawn
-            .iter()
-            .find(|(text, _)| text == "night")
-            .expect("the open card draws the sung word")
-            .1
-            .center()
-            .y;
-
-        for cycle in 0..2 {
-            let drawn = texts(&mut app);
-            let header = header_at(&drawn);
-            click(&mut app, header);
-            for _ in 0..30 {
-                frame(&mut app);
-            }
-            assert!(app.lyrics_card_collapsed);
-            assert_eq!(panel_height(), panel_height_at_rest);
-
-            let mut drawn = texts(&mut app);
-            assert!(
-                !drawn.iter().any(|(text, _)| text == "asleep"),
-                "the collapsed card lays out only its five-line window"
-            );
-            let stage = ctx
-                .read_response(egui::Id::new("lyrics-card-stage"))
-                .expect("the collapsed stage has a stable response")
-                .rect;
-            for word in ["city", "map", "night", "there's", "Coffee"] {
-                let line = drawn
-                    .iter()
-                    .find(|(text, _)| text == word)
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "collapsed cycle {cycle} draws its surrounding lyric line containing {word}: {drawn:?}"
-                        )
-                    })
-                    .1;
-                assert!(
-                    line.center().y >= stage.top() && line.center().y <= stage.bottom(),
-                    "collapsed cycle {cycle} keeps {word} inside the stage: {line:?}, {stage:?}"
-                );
-            }
-            let active = drawn
-                .iter()
-                .find(|(text, _)| text == "night")
-                .expect("the collapsed stage keeps the active line")
-                .1;
-            assert!(active.top() >= stage.top() && active.bottom() <= stage.bottom());
-            assert!(
-                (active.center().y - (stage.top() + stage.height() * 0.45)).abs() < 20.0,
-                "the active line sits at 45 percent of the collapsed stage: {active:?}, {stage:?}"
-            );
-
-            if cycle == 0 {
-                // A lyric click seeks; it must not also toggle the card through
-                // the padding response behind it.
-                click(&mut app, active.center());
-                frame(&mut app);
-                assert!(
-                    app.lyrics_card_collapsed,
-                    "clicking a lyric does not collapse or expand the card"
-                );
-                drawn = texts(&mut app);
-            }
-
-            let header = header_at(&drawn);
-            click(&mut app, header);
-            for _ in 0..30 {
-                frame(&mut app);
-            }
-            assert!(!app.lyrics_card_collapsed);
-            assert_eq!(panel_height(), panel_height_at_rest);
-            let drawn = texts(&mut app);
-            let reopened_night_y = drawn
-                .iter()
-                .find(|(text, _)| text == "night")
-                .expect("opening again centres the sung line")
-                .1
-                .center()
-                .y;
-            assert!(
-                (reopened_night_y - followed_night_y).abs() < 1.0,
-                "cycle {cycle} kept the expanded scroll position: {followed_night_y} to {reopened_night_y}"
-            );
-        }
-        app.backend.shutdown();
-    }
-
-    /// The panel carries the Spotify shell: a large cover, the title and
-    /// artist, and a lyrics card that stays inside a narrow panel.
-    #[cfg(feature = "demo")]
-    #[test]
-    fn the_now_playing_panel_has_the_spotify_shell() {
-        let (ctx, mut app) = accessible_app("now-playing-shell");
-        app.backend.set_offline(true);
-        app.show_lyrics_panel = true;
-        app.settings.lyrics_width = 280.0;
-        app.settings
-            .apply_lyrics_style(crate::settings::LyricsStyle::AppleMusic);
-        app.lyrics = Loadable::Loaded(Some(word_sample_lyrics()));
-        app.lyrics_following = true;
-        app.lyrics_card_collapsed = true;
-        app.local.position_ms = 80_400;
-        app.local.position_at = None;
-        if let Some(remote) = &mut app.remote {
-            remote.state.progress_ms = Some(80_400);
-        }
-        let size = egui::vec2(1100.0, 900.0);
-        for _ in 0..30 {
-            view_frame_sized(&ctx, &mut app, Vec::new(), App::frame_ui, size);
-        }
-        let drawn = view_frame_sized(&ctx, &mut app, Vec::new(), App::frame_ui, size);
-        for text in ["Rosewood", "Bonobo", "Lyrics"] {
-            assert!(
-                drawn.iter().any(|(drawn, _)| drawn == text),
-                "the panel draws {text}: {drawn:?}"
-            );
-        }
-        let stage = ctx
-            .read_response(egui::Id::new("lyrics-card-stage"))
-            .expect("the lyrics card has a stage")
-            .rect;
-        assert!(
-            stage.height() >= 220.0,
-            "the card stays usable at 280 width: {stage:?}"
-        );
-        assert!(
-            stage.width() <= 280.0,
-            "the card stays inside the narrow panel: {stage:?}"
-        );
-        app.backend.shutdown();
-    }
-
-    /// The lyrics popup leads with presets; the rest of the controls stay
-    /// behind **More** until asked for.
-    #[cfg(feature = "demo")]
-    #[test]
-    fn the_lyrics_popup_puts_presets_first() {
-        let (ctx, mut app) = accessible_app("lyrics-popup-presets");
-        app.backend.set_offline(true);
-        app.show_lyrics_panel = true;
-        app.settings.lyrics_width = 360.0;
-        app.settings
-            .apply_lyrics_style(crate::settings::LyricsStyle::AppleMusic);
-        app.lyrics = Loadable::Loaded(Some(word_sample_lyrics()));
-        app.lyrics_following = true;
-        app.lyrics_card_collapsed = true;
-        app.local.position_ms = 80_400;
-        app.local.position_at = None;
-        if let Some(remote) = &mut app.remote {
-            remote.state.progress_ms = Some(80_400);
-        }
-        let size = egui::vec2(1100.0, 900.0);
-        for _ in 0..30 {
-            view_frame_sized(&ctx, &mut app, Vec::new(), App::frame_ui, size);
-        }
-        let drawn = view_frame_sized(&ctx, &mut app, Vec::new(), App::frame_ui, size);
-        let title = drawn
-            .iter()
-            .filter(|(text, _)| text == "Lyrics")
-            .map(|(_, rect)| rect.center())
-            .max_by(|a, b| a.x.total_cmp(&b.x))
-            .expect("the card header is drawn");
-        let stage = ctx
-            .read_response(egui::Id::new("lyrics-card-stage"))
-            .expect("the lyrics card has a stage")
-            .rect;
-        let gear = egui::pos2(stage.right() - 116.0, title.y);
-        frame_events(
-            &ctx,
-            &mut app,
-            pointer_click(gear, egui::PointerButton::Primary),
-        );
-        for _ in 0..8 {
-            view_frame_sized(&ctx, &mut app, Vec::new(), App::frame_ui, size);
-        }
-        let popup = view_frame_sized(&ctx, &mut app, Vec::new(), App::frame_ui, size);
-        for text in [
-            "Style preset",
-            "Spicy",
-            "Apple Music",
-            "Minimal",
-            "Text size",
-        ] {
-            assert!(
-                popup.iter().any(|(drawn, _)| drawn == text),
-                "the popup leads with {text}: {popup:?}"
-            );
-        }
-        assert!(
-            !popup.iter().any(|(drawn, _)| drawn == "Focus mode"),
-            "advanced controls stay behind More: {popup:?}"
-        );
-        let more = popup
-            .iter()
-            .find(|(text, _)| text == "More")
-            .expect("the popup offers More")
-            .1
-            .center();
-        frame_events(
-            &ctx,
-            &mut app,
-            pointer_click(more, egui::PointerButton::Primary),
-        );
-        for _ in 0..8 {
-            view_frame_sized(&ctx, &mut app, Vec::new(), App::frame_ui, size);
-        }
-        let opened = view_frame_sized(&ctx, &mut app, Vec::new(), App::frame_ui, size);
-        for text in ["Look", "Focus mode", "Motion"] {
-            assert!(
-                opened.iter().any(|(drawn, _)| drawn == text),
-                "More reveals {text}: {opened:?}"
-            );
-        }
-        app.backend.shutdown();
-    }
-
-    /// Five logical lines stay inside the collapsed stage at both heights its
-    /// clamp is meant to support, with the active block still at 45 percent.
-    #[cfg(feature = "demo")]
-    #[test]
-    fn the_collapsed_stage_fits_five_lines_at_the_supported_heights() {
-        for screen_height in [871.0, 1014.0] {
-            let (ctx, mut app) = accessible_app(&format!("lyrics-stage-{screen_height}"));
-            app.backend.set_offline(true);
-            app.show_lyrics_panel = true;
-            app.lyrics = Loadable::Loaded(Some(word_sample_lyrics()));
-            app.lyrics_following = true;
-            app.lyrics_card_collapsed = true;
-            app.local.position_ms = 80_400;
-            app.local.position_at = None;
-            if let Some(remote) = &mut app.remote {
-                remote.state.progress_ms = Some(80_400);
-            }
-            let size = egui::vec2(1100.0, screen_height);
-            for _ in 0..30 {
-                view_frame_sized(&ctx, &mut app, Vec::new(), App::frame_ui, size);
-            }
-            let drawn = view_frame_sized(&ctx, &mut app, Vec::new(), App::frame_ui, size);
-            let stage = ctx
-                .read_response(egui::Id::new("lyrics-card-stage"))
-                .expect("the collapsed stage has a stable response")
-                .rect;
-            assert!(
-                stage.height() >= 220.0,
-                "the stage is tall enough for five lines: {} at screen height {screen_height}",
-                stage.height()
-            );
-            for word in ["city", "map", "night", "there's", "Coffee"] {
-                let line = drawn
-                    .iter()
-                    .find(|(text, _)| text == word)
-                    .unwrap_or_else(|| panic!("the five-line stage draws {word}: {drawn:?}"))
-                    .1;
-                assert!(
-                    line.center().y >= stage.top() && line.center().y <= stage.bottom(),
-                    "{word} stays inside the stage: {line:?}, {stage:?}"
-                );
-            }
-            let active = drawn
-                .iter()
-                .find(|(text, _)| text == "night")
-                .expect("the active line is drawn")
-                .1;
-            assert!(
-                (active.center().y - (stage.top() + stage.height() * 0.45)).abs() < 20.0,
-                "the active line sits at 45 percent: {active:?}, {stage:?}"
-            );
-            app.backend.shutdown();
-        }
-    }
-
-    /// The body has a real viewport: a wheel over it moves the words and
-    /// stops the view following the song.
-    #[cfg(feature = "demo")]
-    #[test]
-    fn the_lyrics_panel_scrolls_by_hand() {
-        let (ctx, mut app) = accessible_app("lyrics-scroll");
-        app.backend.set_offline(true);
-        app.show_lyrics_panel = true;
-        app.lyrics = Loadable::Loaded(Some(word_sample_lyrics()));
-        app.lyrics_following = true;
-        for _ in 0..60 {
-            frame(&ctx, &mut app);
-        }
-        let before = screen_texts(&ctx, &mut app);
-        let coffee = before
-            .iter()
-            .find(|(text, _)| text == "Coffee")
-            .expect("the body shows the next lines")
-            .1;
-        frame_events(
-            &ctx,
-            &mut app,
-            vec![
-                egui::Event::PointerMoved(coffee.center()),
-                egui::Event::MouseWheel {
-                    unit: egui::MouseWheelUnit::Point,
-                    delta: egui::vec2(0.0, -260.0),
-                    modifiers: egui::Modifiers::NONE,
-                    phase: egui::TouchPhase::Move,
-                },
-            ],
-        );
-        for _ in 0..30 {
-            frame(&ctx, &mut app);
-        }
-        let after = screen_texts(&ctx, &mut app);
-        let moved = after
-            .iter()
-            .find(|(text, _)| text == "Coffee")
-            .map_or(f32::NEG_INFINITY, |(_, rect)| rect.top());
-        assert!(
-            moved < coffee.top() - 40.0,
-            "the wheel scrolls the body up: {} to {moved}",
-            coffee.top()
-        );
-        assert!(!app.lyrics_following, "hand scrolling stops following");
-        app.backend.shutdown();
-    }
-
-    /// The body keeps a real scroll viewport after the card is collapsed and
-    /// opened again, not just on the first open.
-    #[cfg(feature = "demo")]
-    #[test]
-    fn the_lyrics_panel_still_scrolls_after_reopening() {
-        let (ctx, mut app) = accessible_app("lyrics-reopen-scroll");
-        app.backend.set_offline(true);
-        app.show_lyrics_panel = true;
-        app.lyrics = Loadable::Loaded(Some(word_sample_lyrics()));
-        app.lyrics_following = true;
-        let header_at = |drawn: &[(String, egui::Rect)]| {
-            drawn
-                .iter()
-                .filter(|(text, _)| text == "Lyrics")
-                .map(|(_, rect)| rect.center())
-                .max_by(|a, b| a.x.total_cmp(&b.x))
-                .expect("the card header is drawn")
-        };
-        for _ in 0..60 {
-            frame(&ctx, &mut app);
-        }
-        let drawn = screen_texts(&ctx, &mut app);
-        let header = header_at(&drawn);
-        frame_events(
-            &ctx,
-            &mut app,
-            pointer_click(header, egui::PointerButton::Primary),
-        );
-        for _ in 0..30 {
-            frame(&ctx, &mut app);
-        }
-        assert!(app.lyrics_card_collapsed);
-
-        let drawn = screen_texts(&ctx, &mut app);
-        let header = header_at(&drawn);
-        frame_events(
-            &ctx,
-            &mut app,
-            pointer_click(header, egui::PointerButton::Primary),
-        );
-        for _ in 0..30 {
-            frame(&ctx, &mut app);
-        }
-        assert!(!app.lyrics_card_collapsed);
-
-        let before = screen_texts(&ctx, &mut app);
-        let pointer = before
-            .iter()
-            .find(|(text, _)| text == "night")
-            .expect("the reopened body shows the sung line")
-            .1
-            .center();
-        frame_events(
-            &ctx,
-            &mut app,
-            vec![
-                egui::Event::PointerMoved(pointer),
-                egui::Event::MouseWheel {
-                    unit: egui::MouseWheelUnit::Point,
-                    delta: egui::vec2(0.0, -260.0),
-                    modifiers: egui::Modifiers::NONE,
-                    phase: egui::TouchPhase::Move,
-                },
-            ],
-        );
-        for _ in 0..30 {
-            frame(&ctx, &mut app);
-        }
-        let after = screen_texts(&ctx, &mut app);
-        assert!(
-            after
-                .iter()
-                .any(|(text, _)| text == "asleep" || text == "Somewhere"),
-            "the reopened body scrolls to later lines: {after:?}"
-        );
-        assert!(!app.lyrics_following, "hand scrolling stops following");
-        app.backend.shutdown();
-    }
-
     /// The panel edge drags: its width follows the pointer and is saved.
     #[test]
     fn the_lyrics_panel_resizes_by_dragging_its_edge() {
@@ -9678,46 +9206,565 @@ mod tests {
                 assert_same_row(&placed, "Queue", "Recent");
             }
             if lyrics {
-                assert_same_row(&placed, "Now playing", "Follow");
+                // The header's title stays on one row beside the close button.
+                let title = placed
+                    .iter()
+                    .filter(|(text, _)| text == "Late night focus")
+                    .min_by(|a, b| a.1.top().total_cmp(&b.1.top()))
+                    .expect("the panel's header names where the song plays from")
+                    .1;
+                assert!(title.height() < 30.0, "one row: {title:?}");
             }
         }
         app.backend.shutdown();
     }
 
-    /// The Lyrics section offers the three looks and the alignment choice,
-    /// and picking one writes the whole preset rather than only its name.
+    /// A capture run shows the sample at the time its fixture chose, even
+    /// after cover loading has taken longer than the lyrics' own line.
+    #[cfg(feature = "demo")]
     #[test]
-    fn lyrics_look_presets_are_on_the_settings_page() {
+    fn a_capture_run_holds_the_sample_playhead_still() {
+        let (_ctx, mut app) = accessible_app("demo-hold-playhead");
+        if let Some(remote) = &mut app.remote {
+            remote.state.progress_ms = Some(80_400);
+            remote.received_at = Instant::now() - std::time::Duration::from_secs(10);
+        }
+        app.hold_demo_playhead();
+        let now = app.now_playing().expect("the sample track");
+        assert!(
+            now.position_ms.abs_diff(80_400) < 100,
+            "{}",
+            now.position_ms
+        );
+        app.backend.shutdown();
+    }
+
+    /// A lyrics app at the demo's 1:20, the panel open, settled.
+    #[cfg(feature = "demo")]
+    fn lyrics_panel_app(name: &str) -> (egui::Context, App, egui::Vec2) {
+        let (ctx, mut app) = accessible_app(name);
+        app.backend.set_offline(true);
+        app.show_lyrics_panel = true;
+        app.settings.lyrics_width = 360.0;
+        app.lyrics = Loadable::Loaded(Some(word_sample_lyrics()));
+        app.local.position_ms = 80_400;
+        app.local.position_at = None;
+        if let Some(remote) = &mut app.remote {
+            remote.state.progress_ms = Some(80_400);
+        }
+        let size = egui::vec2(1100.0, 900.0);
+        for _ in 0..60 {
+            view_frame_sized(&ctx, &mut app, Vec::new(), App::frame_ui, size);
+        }
+        (ctx, app, size)
+    }
+
+    /// The lyrics panel leads with the words: the frosted card fills it, the
+    /// song sits in brief above the words, and the line being sung lands
+    /// about a quarter of the way down the panel.
+    #[cfg(feature = "demo")]
+    #[test]
+    fn the_lyrics_panel_leads_with_the_words() {
+        let (ctx, mut app, size) = lyrics_panel_app("lyrics-panel-words");
+        let drawn = view_frame_sized(&ctx, &mut app, Vec::new(), App::frame_ui, size);
+        for text in ["Lyrics", "Rosewood", "Bonobo"] {
+            assert!(
+                drawn.iter().any(|(t, r)| t == text && r.left() > 700.0),
+                "the panel draws {text}: {drawn:?}"
+            );
+        }
+        let song = drawn
+            .iter()
+            .find(|(t, r)| t == "Rosewood" && r.left() > 700.0)
+            .expect("the song row shows")
+            .1;
+        let sung = drawn
+            .iter()
+            .find(|(t, _)| t == "But the night is wide and the road is long")
+            .expect("the sung line is drawn")
+            .1;
+        assert!(sung.top() > song.bottom(), "{sung:?} under {song:?}");
+        assert!(
+            sung.top() < size.y * 0.5,
+            "the sung line sits in the upper part: {sung:?}"
+        );
+        assert!(
+            !drawn
+                .iter()
+                .any(|(t, r)| t == "Next up" && r.left() > 700.0),
+            "the queue belongs to the Now Playing view: {drawn:?}"
+        );
+        app.backend.shutdown();
+    }
+
+    /// Turning the song row off gives the words the whole panel, and turning
+    /// it back on returns the song in brief above them.
+    #[cfg(feature = "demo")]
+    #[test]
+    fn the_song_above_the_lyrics_comes_and_goes() {
+        let (ctx, mut app, size) = lyrics_panel_app("lyrics-panel-brief");
+        let drawn = view_frame_sized(&ctx, &mut app, Vec::new(), App::frame_ui, size);
+        assert!(
+            drawn
+                .iter()
+                .any(|(t, r)| t == "Rosewood" && r.left() > 700.0),
+            "the song row shows: {drawn:?}"
+        );
+        let sung_with = drawn
+            .iter()
+            .find(|(t, _)| t == "But the night is wide and the road is long")
+            .expect("the sung line is drawn")
+            .1;
+        app.settings.lyrics_now_playing_header = false;
+        let drawn = view_frame_sized(&ctx, &mut app, Vec::new(), App::frame_ui, size);
+        assert!(
+            !drawn
+                .iter()
+                .any(|(t, r)| t == "Rosewood" && r.left() > 700.0),
+            "the song row is gone: {drawn:?}"
+        );
+        let sung_off = drawn
+            .iter()
+            .find(|(t, _)| t == "But the night is wide and the road is long")
+            .expect("the sung line is still drawn")
+            .1;
+        assert!(
+            sung_off.top() < sung_with.top(),
+            "the words sit higher without the row: {sung_off:?} above {sung_with:?}"
+        );
+        app.settings.lyrics_now_playing_header = true;
+        let drawn = view_frame_sized(&ctx, &mut app, Vec::new(), App::frame_ui, size);
+        assert!(
+            drawn
+                .iter()
+                .any(|(t, r)| t == "Rosewood" && r.left() > 700.0),
+            "the song row returns: {drawn:?}"
+        );
+        app.backend.shutdown();
+    }
+
+    /// The gear in full screen lyrics opens its settings rather than passing
+    /// the click to the words underneath, which used to tap the top line and
+    /// seek back to it.
+    #[cfg(feature = "demo")]
+    #[test]
+    fn full_screen_settings_open_without_seeking_the_lyrics() {
+        use egui::accesskit::Role;
+        let (ctx, mut app) = accessible_app("fullscreen-settings");
+        app.show_lyrics_panel = true;
+        app.lyrics_uri = app.now_playing().map(|now| now.uri);
+        app.lyrics = Loadable::Loaded(Some(word_sample_lyrics()));
+        app.local.position_ms = 80_400;
+        app.local.position_at = None;
+        app.lyrics_fullscreen = Some(false);
+        for _ in 0..3 {
+            let _ = accessible_frame_height(&ctx, &mut app, Vec::new(), 900.0);
+        }
+        let tree = accessible_frame_height(&ctx, &mut app, Vec::new(), 900.0);
+        let leave_label = crate::i18n::gettext(app.locale, "Leave full screen (Esc)");
+        let leave = tree
+            .nodes
+            .iter()
+            .find(|(_, node)| {
+                node.role() == Role::Button && node.label() == Some(leave_label.as_ref())
+            })
+            .expect("the leave button is a button")
+            .1
+            .bounds()
+            .expect("the leave button has bounds");
+        // The tree's Leave button is the player bar's, at the bottom right.
+        // The full screen gear sits in the page's top-right strip, one button
+        // and a gap left of the strip's own shrink control, which shares the
+        // right edge: 46 points left of the bar's button and near the top of
+        // the window lands on it with and without a titlebar inset.
+        let at = egui::pos2(
+            ((leave.x0 + leave.x1) / 2.0) as f32 - 46.0,
+            900.0 - ((leave.y0 + leave.y1) / 2.0) as f32,
+        );
+        app.actions.clear();
+        let _ = accessible_frame_height(&ctx, &mut app, vec![egui::Event::PointerMoved(at)], 900.0);
+        let _ = accessible_frame_height(
+            &ctx,
+            &mut app,
+            pointer_click(at, egui::PointerButton::Primary),
+            900.0,
+        );
+        assert!(
+            !app.actions
+                .iter()
+                .any(|action| matches!(action, Action::Seek(_))),
+            "the gear click must not seek: {:?}",
+            app.actions
+        );
+        assert!(
+            !app.milkdrop_behind_lyrics(),
+            "the gear click is not a backdrop switch"
+        );
+        let painted = view_frame_sized(
+            &ctx,
+            &mut app,
+            Vec::new(),
+            App::frame_ui,
+            egui::vec2(1280.0, 900.0),
+        );
+        let spring = crate::i18n::pgettext(app.locale, "lyrics style", "Spring");
+        let all = crate::i18n::gettext(app.locale, "All settings…");
+        let spacing = crate::i18n::gettext(app.locale, "Line spacing");
+        assert!(
+            painted
+                .iter()
+                .any(|(text, _)| text == &spring || text == &all),
+            "the popup opens at {at:?} (leave {leave:?}): {painted:?}"
+        );
+        assert!(
+            painted.iter().any(|(text, _)| text == &spacing),
+            "the popup offers line spacing: {painted:?}"
+        );
+        app.backend.shutdown();
+    }
+
+    /// Split full screen keeps the app's own chrome and puts the playing
+    /// song and its queue beside the words.
+    #[cfg(feature = "demo")]
+    #[test]
+    fn split_full_screen_keeps_the_sidebar_and_now_playing() {
+        let (ctx, mut app) = accessible_app("lyrics-split");
+        app.show_lyrics_panel = true;
+        app.lyrics_uri = app.now_playing().map(|now| now.uri);
+        app.lyrics = Loadable::Loaded(Some(word_sample_lyrics()));
+        app.local.position_ms = 80_400;
+        app.local.position_at = None;
+        app.settings.lyrics_split_view = true;
+        app.lyrics_fullscreen = Some(false);
+        app.show_now_playing_panel = true;
+        let size = egui::vec2(1400.0, 900.0);
+        for _ in 0..5 {
+            view_frame_sized(&ctx, &mut app, Vec::new(), App::frame_ui, size);
+        }
+        let painted = view_frame_sized(&ctx, &mut app, Vec::new(), App::frame_ui, size);
+        for text in [
+            "Home",
+            "Search",
+            "Now playing",
+            "Next up",
+            "But the night is wide and the road is long",
+        ] {
+            assert!(
+                painted.iter().any(|(drawn, _)| drawn == text),
+                "the split view draws {text}: {painted:?}"
+            );
+        }
+        // Folding the Now Playing column away still leaves the words.
+        app.apply(Action::ToggleNowPlayingPanel, &ctx);
+        let painted = view_frame_sized(&ctx, &mut app, Vec::new(), App::frame_ui, size);
+        assert!(
+            !painted.iter().any(|(drawn, _)| drawn == "Next up"),
+            "the column is gone: {painted:?}"
+        );
+        assert!(app.lyrics_fullscreen.is_some(), "the split view stays");
+        // Choosing a page in the sidebar leaves the split lyrics for it.
+        app.apply(Action::Open(Page::Search), &ctx);
+        assert!(app.lyrics_fullscreen.is_none());
+        app.backend.shutdown();
+    }
+
+    /// The Now Playing button in the player bar opens its own panel: the
+    /// cover, the song and what is queued next, beside the page. The Lyrics
+    /// button opens the words alone, and the two trade places.
+    #[cfg(feature = "demo")]
+    #[test]
+    fn the_now_playing_button_opens_its_own_panel() {
+        let (ctx, mut app) = accessible_app("now-playing-button");
+        app.show_lyrics_panel = true;
+        app.lyrics_uri = app.now_playing().map(|now| now.uri);
+        app.lyrics = Loadable::Loaded(Some(word_sample_lyrics()));
+        let size = egui::vec2(1280.0, 900.0);
+        for _ in 0..3 {
+            view_frame_sized(&ctx, &mut app, Vec::new(), App::frame_ui, size);
+        }
+        // The player bar sits at the bottom of the view.
+        let bar_button = |tree: &egui::accesskit::TreeUpdate, label: &str| {
+            tree.nodes
+                .iter()
+                .find(|(_, node)| {
+                    node.role() == egui::accesskit::Role::Button
+                        && node.label() == Some(label)
+                        && node.bounds().is_some_and(|bounds| bounds.y0 > 700.0)
+                })
+                .expect("the player bar has the button")
+                .0
+        };
+        let label = crate::i18n::gettext(app.locale, "Now playing");
+        let tree = accessible_frame_height(&ctx, &mut app, Vec::new(), 900.0);
+        let button = bar_button(&tree, label.as_ref());
+        accessible_frame_height(
+            &ctx,
+            &mut app,
+            vec![accessible_action(
+                button,
+                egui::accesskit::Action::Click,
+                None,
+            )],
+            900.0,
+        );
+        assert!(app.show_now_playing_panel && !app.show_lyrics_panel);
+        let painted = view_frame_sized(&ctx, &mut app, Vec::new(), App::frame_ui, size);
+        for text in ["Now playing", "Rosewood", "Bonobo", "Next up"] {
+            assert!(
+                painted.iter().any(|(drawn, _)| drawn == text),
+                "the panel draws {text}: {painted:?}"
+            );
+        }
+        // The lyrics button takes the panel's place back, with words only.
+        let lyrics_label = crate::i18n::gettext(app.locale, "Lyrics");
+        let tree = accessible_frame_height(&ctx, &mut app, Vec::new(), 900.0);
+        let lyrics_button = bar_button(&tree, lyrics_label.as_ref());
+        accessible_frame_height(
+            &ctx,
+            &mut app,
+            vec![accessible_action(
+                lyrics_button,
+                egui::accesskit::Action::Click,
+                None,
+            )],
+            900.0,
+        );
+        assert!(app.show_lyrics_panel && !app.show_now_playing_panel);
+        let painted = view_frame_sized(&ctx, &mut app, Vec::new(), App::frame_ui, size);
+        assert!(
+            painted
+                .iter()
+                .any(|(drawn, _)| drawn == "But the night is wide and the road is long"),
+            "the words show: {painted:?}"
+        );
+        assert!(
+            !painted.iter().any(|(drawn, _)| drawn == "Next up"),
+            "the Now Playing column is gone: {painted:?}"
+        );
+        app.backend.shutdown();
+    }
+
+    /// Line spacing moves the following lines apart without changing the
+    /// height of a line, and the lyrics view follows the new layout.
+    #[cfg(feature = "demo")]
+    #[test]
+    fn line_spacing_moves_the_lines_apart() {
+        let (ctx, mut app, size) = lyrics_panel_app("lyrics-spacing");
+        let gap = |ctx: &egui::Context, app: &mut App| {
+            let drawn = view_frame_sized(ctx, app, Vec::new(), App::frame_ui, size);
+            let top = |text: &str| {
+                drawn
+                    .iter()
+                    .find(|(drawn, _)| drawn == text)
+                    .unwrap_or_else(|| panic!("{text} is drawn"))
+                    .1
+                    .top()
+            };
+            top("And there's nowhere I would rather be")
+                - top("But the night is wide and the road is long")
+        };
+        let before = gap(&ctx, &mut app);
+        app.settings.lyrics_line_spacing = 150;
+        for _ in 0..10 {
+            view_frame_sized(&ctx, &mut app, Vec::new(), App::frame_ui, size);
+        }
+        let after = gap(&ctx, &mut app);
+        assert!(
+            after > before + 4.0,
+            "the gap grows from {before} to {after}"
+        );
+        app.backend.shutdown();
+    }
+
+    /// A wheel over the lyrics moves them, and after 750 ms with no hand on
+    /// them the view goes back to the line being sung, as on mobile.
+    #[cfg(feature = "demo")]
+    #[test]
+    fn the_lyrics_scroll_by_hand_then_return_to_the_song() {
+        let (ctx, mut app, size) = lyrics_panel_app("lyrics-hand");
+        let sung = "But the night is wide and the road is long";
+        let at =
+            |drawn: &[(String, egui::Rect)]| drawn.iter().find(|(t, _)| t == sung).map(|(_, r)| *r);
+        let mut time = 100.0;
+        let mut step = |app: &mut App, events: Vec<egui::Event>| {
+            time += 1.0 / 60.0;
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    time: Some(time),
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                    events,
+                    ..Default::default()
+                },
+                |ui| app.frame_ui(ui),
+            );
+            output.textures_delta.clear();
+            lyric_lines(&ctx)
+        };
+        for _ in 0..30 {
+            step(&mut app, Vec::new());
+        }
+        let rest = at(&step(&mut app, Vec::new())).expect("the sung line shows");
+        step(
+            &mut app,
+            vec![
+                egui::Event::PointerMoved(rest.center()),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, -200.0),
+                    modifiers: egui::Modifiers::NONE,
+                    phase: egui::TouchPhase::Move,
+                },
+            ],
+        );
+        let mut moved = None;
+        for _ in 0..10 {
+            moved = at(&step(&mut app, Vec::new()));
+        }
+        assert!(
+            moved.is_none_or(|r| r.top() < rest.top() - 40.0),
+            "the wheel moves the lyrics: {rest:?} to {moved:?}"
+        );
+        // Taken back, the view holds where the hand left it until the song
+        // moves on, then follows it to the next line.
+        for _ in 0..60 {
+            step(&mut app, Vec::new());
+        }
+        let next = "And there's nowhere I would rather be";
+        app.local.position_ms = 86_000;
+        if let Some(remote) = &mut app.remote {
+            remote.state.progress_ms = Some(86_000);
+        }
+        let mut followed = None;
+        for _ in 0..150 {
+            followed = step(&mut app, Vec::new())
+                .into_iter()
+                .find(|(t, _)| t == next)
+                .map(|(_, r)| r);
+        }
+        let followed = followed.expect("the next line shows");
+        assert!(
+            (followed.top() - rest.top()).abs() < 2.0,
+            "{rest:?} then {followed:?}"
+        );
+        app.backend.shutdown();
+    }
+
+    /// Full screen puts the cover on the left and the lyrics beside it,
+    /// the line being sung near the middle; a narrow window stacks them.
+    #[cfg(feature = "demo")]
+    #[test]
+    fn full_screen_lyrics_sit_beside_the_cover() {
+        let (ctx, mut app, _) = lyrics_panel_app("lyrics-fullscreen-layout");
+        app.apply(Action::SetLyricsFullscreen(true), &ctx);
+        app.lyrics = Loadable::Loaded(Some(word_sample_lyrics()));
+        for (size, beside) in [
+            (egui::vec2(1400.0, 900.0), true),
+            (egui::vec2(900.0, 900.0), false),
+        ] {
+            for _ in 0..40 {
+                view_frame_sized(&ctx, &mut app, Vec::new(), App::frame_ui, size);
+            }
+            let drawn = view_frame_sized(&ctx, &mut app, Vec::new(), App::frame_ui, size);
+            let sung = drawn
+                .iter()
+                .find(|(t, _)| t == "But the night is wide and the road is long")
+                .unwrap_or_else(|| panic!("the sung line shows at {size:?}: {drawn:?}"))
+                .1;
+            if beside {
+                assert!(sung.left() > size.x * 0.4, "right of the cover: {sung:?}");
+                assert!(
+                    (sung.center().y - size.y * 0.5).abs() < size.y * 0.2,
+                    "{sung:?}"
+                );
+            } else {
+                assert!(sung.left() < size.x * 0.2, "under the bar: {sung:?}");
+            }
+        }
+        app.backend.shutdown();
+    }
+
+    /// The Lyrics section offers Spring and Bloom, with a separate size
+    /// choice that survives switching the animation.
+    #[test]
+    fn lyrics_styles_are_on_the_settings_page() {
         use egui::accesskit::{Action as AccessibleAction, Role};
         let (ctx, mut app) = accessible_app("lyrics-look-presets");
         app.open(Page::Settings);
         let tree = accessible_frame_height(&ctx, &mut app, vec![], 6000.0);
-        let minimal = accessible_node(&tree, "Minimal", Role::Button);
+        let bloom = accessible_node(&tree, "Bloom", Role::Button);
         let _ = accessible_frame_height(
             &ctx,
             &mut app,
-            vec![accessible_action(minimal, AccessibleAction::Click, None)],
+            vec![accessible_action(bloom, AccessibleAction::Click, None)],
             6000.0,
         );
         assert_eq!(
             app.settings.lyrics_style,
-            crate::settings::LyricsStyle::Minimal
+            crate::settings::LyricsStyle::Bloom
         );
-        assert!(app.settings.lyrics_minimal_mode);
-        assert!(app.settings.lyrics_simple_mode);
-        assert!(app.settings.lyrics_hide_passed_lines);
-
         let tree = accessible_frame_height(&ctx, &mut app, vec![], 6000.0);
-        let center = accessible_node(&tree, "Center", Role::Button);
+        let size = accessible_node(&tree, "130%", Role::Button);
         let _ = accessible_frame_height(
             &ctx,
             &mut app,
-            vec![accessible_action(center, AccessibleAction::Click, None)],
+            vec![accessible_action(size, AccessibleAction::Click, None)],
             6000.0,
         );
-        assert_eq!(
-            app.settings.lyrics_align,
-            crate::settings::LyricsAlign::Center
+        assert_eq!(app.settings.lyrics_font_size, 130);
+        app.backend.shutdown();
+    }
+
+    /// Line spacing, Canvas, the split view and the song row are in the
+    /// Lyrics settings.
+    #[test]
+    fn lyrics_spacing_canvas_and_split_are_on_the_settings_page() {
+        let (ctx, mut app) = accessible_app("lyrics-spacing-setting");
+        app.open(Page::Settings);
+        let painted = view_frame_sized(
+            &ctx,
+            &mut app,
+            Vec::new(),
+            App::frame_ui,
+            egui::vec2(1280.0, 12000.0),
+        );
+        let label = crate::i18n::gettext(app.locale, "Line spacing");
+        assert!(
+            painted.iter().any(|(text, _)| text == &label),
+            "the Lyrics settings offer {label:?}"
+        );
+        for source in ["Spotify Canvas", "Split view", "Song above the lyrics"] {
+            let label = crate::i18n::gettext(app.locale, source);
+            assert!(
+                painted.iter().any(|(text, _)| text == &label),
+                "the Lyrics settings offer {label:?}"
+            );
+        }
+        app.backend.shutdown();
+    }
+
+    /// About names the license this fork is under and links its notices, so
+    /// the AGPL terms and the Spicy Lyrics source are reachable in the app.
+    #[test]
+    fn about_names_the_fork_license_and_offers_its_notices() {
+        use egui::accesskit::Role;
+        let (ctx, mut app) = accessible_app("about-license");
+        app.open(Page::Settings);
+        let tree = accessible_frame_height(&ctx, &mut app, vec![], 6000.0);
+        accessible_node(&tree, "Licenses", Role::Button);
+        let free = crate::i18n::gettext(
+            app.locale,
+            "Free software under the GNU AGPL v3.0. Upstream Spotifast code keeps its MIT permission. Lyrics rendering is adapted from Spicy Lyrics Mobile.",
+        );
+        let painted = view_frame_sized(
+            &ctx,
+            &mut app,
+            vec![],
+            App::frame_ui,
+            egui::vec2(1280.0, 12000.0),
+        );
+        assert!(
+            painted.iter().any(|(text, _)| text == &free),
+            "About names the license"
         );
         app.backend.shutdown();
     }
@@ -9855,160 +9902,6 @@ mod tests {
         }
     }
 
-    /// The line being sung sits high in the side panel, a fifth of the way
-    /// down, and a little below a third in full screen, where Spicy Lyrics
-    /// gives the words room around it.
-    #[test]
-    fn the_sung_line_sits_high_in_the_lyrics() {
-        for fullscreen in [false, true] {
-            let (ctx, mut app) = accessible_app(&format!("sung-line-{fullscreen}"));
-            app.show_lyrics_panel = true;
-            app.lyrics_fullscreen = fullscreen.then_some(false);
-            app.lyrics = Loadable::Loaded(Some(sample_lyrics()));
-            app.lyrics_following = true;
-            let remote = app.remote.as_mut().unwrap();
-            remote.state.is_playing = false;
-            remote.state.progress_ms = Some(106_000);
-            let mut centre = None;
-            for frame in 0..60 {
-                let mut output = ctx.run_ui(
-                    egui::RawInput {
-                        time: Some(f64::from(frame) / 30.0),
-                        screen_rect: Some(egui::Rect::from_min_size(
-                            egui::Pos2::ZERO,
-                            egui::vec2(1280.0, 800.0),
-                        )),
-                        ..Default::default()
-                    },
-                    |ui| app.frame_ui(ui),
-                );
-                output.textures_delta.clear();
-                centre = output.shapes.iter().find_map(|shape| match &shape.shape {
-                    egui::Shape::Text(text)
-                        if text.galley.job.text == "Somewhere past the county line" =>
-                    {
-                        Some(text.pos.y + text.galley.size().y / 2.0)
-                    }
-                    _ => None,
-                });
-            }
-            let centre = centre.expect("the sung line is drawn");
-            let below_a_third = if fullscreen {
-                220.0..380.0
-            } else {
-                // The card now sits below the cover and title, so the sung
-                // line is high inside the card rather than the window.
-                360.0..640.0
-            };
-            assert!(
-                below_a_third.contains(&centre),
-                "fullscreen {fullscreen}: the sung line is at {centre} of 800"
-            );
-            app.backend.shutdown();
-        }
-    }
-
-    /// Word-synced lines are painted a syllable at a time, so the whole line
-    /// is never one text run.
-    #[cfg(feature = "demo")]
-    #[test]
-    fn word_synced_lyrics_are_painted_in_syllables() {
-        let (ctx, mut app) = accessible_app("word-synced-syllables");
-        apply_flags(&mut app, None, Some("lyrics-words-fullscreen-view"));
-        let remote = app.remote.as_mut().unwrap();
-        remote.state.is_playing = false;
-        remote.state.progress_ms = Some(106_000);
-        let mut texts = Vec::new();
-        // Long enough for the smooth scroll to the sung line to settle.
-        for frame in 0..30 {
-            let mut output = ctx.run_ui(
-                egui::RawInput {
-                    time: Some(f64::from(frame) / 30.0),
-                    screen_rect: Some(egui::Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        egui::vec2(1280.0, 800.0),
-                    )),
-                    ..Default::default()
-                },
-                |ui| app.frame_ui(ui),
-            );
-            output.textures_delta.clear();
-            fn walk(shape: &egui::epaint::Shape, texts: &mut Vec<String>) {
-                match shape {
-                    egui::epaint::Shape::Text(text) => texts.push(text.galley.job.text.clone()),
-                    egui::epaint::Shape::Vec(shapes) => {
-                        shapes.iter().for_each(|shape| walk(shape, texts))
-                    }
-                    _ => {}
-                }
-            }
-            texts.clear();
-            for clipped in &output.shapes {
-                walk(&clipped.shape, &mut texts);
-            }
-        }
-        assert!(texts.iter().any(|text| text == "Some"), "{texts:?}");
-        assert!(texts.iter().any(|text| text == "where"), "{texts:?}");
-        assert!(
-            !texts
-                .iter()
-                .any(|text| text == "Somewhere past the county line"),
-            "the line is not painted as one run: {texts:?}"
-        );
-        app.backend.shutdown();
-    }
-
-    /// Full screen puts the cover and the lyrics side by side as one centred
-    /// group, and a song without words gets its cover alone in the middle.
-    #[cfg(feature = "demo")]
-    #[test]
-    fn full_screen_lyrics_show_the_cover_beside_the_words_or_alone() {
-        let find = |shapes: &[egui::epaint::ClippedShape], wanted: &str| {
-            shapes.iter().find_map(|shape| match &shape.shape {
-                egui::Shape::Text(text) if text.galley.job.text == wanted => {
-                    Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
-                }
-                _ => None,
-            })
-        };
-        for (surface, words) in [
-            ("lyrics-fullscreen-view", true),
-            ("lyrics-fullscreen-instrumental", false),
-        ] {
-            let (ctx, mut app) = accessible_app(surface);
-            apply_flags(&mut app, None, Some(surface));
-            let mut shapes = Vec::new();
-            for frame in 0..30 {
-                let mut output = ctx.run_ui(
-                    egui::RawInput {
-                        time: Some(f64::from(frame) / 30.0),
-                        screen_rect: Some(egui::Rect::from_min_size(
-                            egui::Pos2::ZERO,
-                            egui::vec2(1600.0, 900.0),
-                        )),
-                        ..Default::default()
-                    },
-                    |ui| app.frame_ui(ui),
-                );
-                output.textures_delta.clear();
-                shapes = output.shapes;
-            }
-            let lyric = find(&shapes, "Somewhere past the county line");
-            let detail = find(&shapes, "No timed lyrics for this track.");
-            if words {
-                let lyric = lyric.expect("the words are drawn");
-                // Right of a cover that starts well in from the left edge.
-                assert!(lyric.left() > 600.0, "beside the cover: {lyric:?}");
-                assert!(lyric.left() < 1000.0, "the group is centred: {lyric:?}");
-            } else {
-                assert!(lyric.is_none());
-                let detail = detail.expect("why there are no words");
-                assert!((detail.center().x - 800.0).abs() < 2.0, "{detail:?}");
-            }
-            app.backend.shutdown();
-        }
-    }
-
     /// The cover moves aside only once there are words: while lyrics load,
     /// and when fetching them failed, it stays in the middle, the failure
     /// with its retry beneath.
@@ -10057,85 +9950,6 @@ mod tests {
             }
             app.backend.shutdown();
         }
-    }
-
-    #[test]
-    fn fullscreen_lyrics_highlight_preserves_line_layout() {
-        let root =
-            std::env::temp_dir().join(format!("spotifast-lyrics-layout-{}", std::process::id()));
-        let ctx = egui::Context::default();
-        let waker = crate::backend::Waker::default();
-        waker.attach(&ctx);
-        let mut app = App::new(
-            &waker,
-            AppDirs {
-                config: root.join("config"),
-                state: root.join("state"),
-                cache: root.join("cache"),
-            },
-            Settings::default(),
-            AppOptions {
-                media_controls: false,
-                restore_sign_in: false,
-                tray: false,
-                autostart: false,
-            },
-        );
-        app.attach(&ctx);
-        populate(&mut app);
-        app.show_lyrics_panel = true;
-        app.lyrics_fullscreen = Some(false);
-        app.lyrics = Loadable::Loaded(Some(sample_lyrics()));
-        app.lyrics_following = false;
-        // Light differs from the dark palette this view is always drawn in.
-        let lit = egui::Color32::WHITE;
-        ctx.set_theme(egui::Theme::Light);
-        let mut sizes = Vec::new();
-        let mut sung = None;
-        for (step, position) in [0, 41_000].into_iter().enumerate() {
-            let remote = app.remote.as_mut().unwrap();
-            remote.state.is_playing = false;
-            remote.state.progress_ms = Some(position);
-            for frame in 0..30 {
-                let input = egui::RawInput {
-                    time: Some(step as f64 + f64::from(frame) / 30.0),
-                    screen_rect: Some(egui::Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        egui::vec2(1280.0, 800.0),
-                    )),
-                    ..Default::default()
-                };
-                let mut output = ctx.run_ui(input, |ui| app.frame_ui(ui));
-                output.textures_delta.clear();
-                if frame == 29 {
-                    // The last matching run is the text itself: the active
-                    // line's translucent glow copies come first.
-                    let text = output
-                        .shapes
-                        .iter()
-                        .filter_map(|shape| match &shape.shape {
-                            egui::Shape::Text(text)
-                                if text.galley.job.text
-                                    == "Streetlights blinking down the river road" =>
-                            {
-                                Some(text)
-                            }
-                            _ => None,
-                        })
-                        .next_back()
-                        .expect("the lyric line is rendered");
-                    sung = text.galley.job.sections.first().map(|s| s.format.color);
-                    sizes.push(text.galley.rows.len());
-                }
-            }
-        }
-        app.backend.shutdown();
-        assert_eq!(sizes[0], sizes[1], "highlighting must not rewrap a line");
-        assert_eq!(
-            sung,
-            Some(lit),
-            "the sung line is lit in the theme's text colour"
-        );
     }
 
     #[test]

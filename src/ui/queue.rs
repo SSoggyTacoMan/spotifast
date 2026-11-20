@@ -58,6 +58,7 @@ pub fn side_panel(app: &mut App, ui: &mut egui::Ui) {
             ui.ctx(),
             app.show_queue_panel,
             app.show_lyrics_panel,
+            app.show_now_playing_panel,
             ui.available_width(),
         );
         ui.add_space(window_controls.queue_top);

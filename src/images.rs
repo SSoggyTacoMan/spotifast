@@ -133,6 +133,8 @@ struct Inner {
     http: Http,
     runtime: tokio::runtime::Handle,
     cache_dir: PathBuf,
+    /// The Spicy Lyrics Canvas lookup, when this loader has a client for it.
+    canvas: Option<Arc<crate::canvas::SpotifyCanvasFinder>>,
     /// Local files found to hold no cover, so they are not read again.
     coverless: Mutex<HashSet<String>>,
 }
@@ -145,13 +147,21 @@ pub struct ArtLoader {
 impl ArtLoader {
     pub fn new(http: impl Into<Http>, runtime: tokio::runtime::Handle, cache_dir: PathBuf) -> Self {
         let _ = std::fs::create_dir_all(&cache_dir);
+        let http: Http = http.into();
+        let canvas = http.client().ok().map(|client| {
+            Arc::new(crate::canvas::SpotifyCanvasFinder::new(
+                client,
+                Some(cache_dir.join("canvas/known-v2.json")),
+            ))
+        });
         Self {
             inner: Arc::new(Inner {
                 entries: Mutex::new(HashMap::new()),
                 textures: Mutex::new(HashMap::new()),
-                http: http.into(),
+                http,
                 runtime,
                 cache_dir,
+                canvas,
                 coverless: Mutex::new(HashSet::new()),
             }),
         }
@@ -165,6 +175,98 @@ impl ArtLoader {
     /// Bytes for `url`, from memory, disk, or the network.
     pub async fn fetch(&self, url: &str) -> Result<Arc<[u8]>, String> {
         self.inner.fetch(url).await
+    }
+
+    /// Looks up a track's Spotify Canvas URL through Spicy Lyrics' Canvas
+    /// service, off the UI thread. `done` receives `None` for a miss, a
+    /// failed lookup, or when this loader has no HTTP client.
+    pub fn canvas_url(&self, track_id: String, done: impl FnOnce(Option<String>) + Send + 'static) {
+        let Some(finder) = self.inner.canvas.clone() else {
+            done(None);
+            return;
+        };
+        self.inner.runtime.spawn(async move {
+            let url = finder.find(&track_id).await;
+            log::debug!(
+                "canvas: {} for {track_id}",
+                if url.is_some() { "found" } else { "none" }
+            );
+            done(url);
+        });
+    }
+
+    /// Downloads and decodes a Canvas MP4 into small frames for the moving
+    /// background. The fetch goes through the artwork cache; the decode runs
+    /// on a blocking worker. `done` receives `None` when either step fails.
+    pub fn canvas_video(
+        &self,
+        url: String,
+        done: impl FnOnce(Option<crate::canvas::BlurredVideo>) + Send + 'static,
+    ) {
+        let inner = Arc::clone(&self.inner);
+        self.inner.runtime.spawn(async move {
+            let video = match inner.fetch(&url).await {
+                Ok(bytes) => inner
+                    .runtime
+                    .spawn_blocking(move || {
+                        crate::canvas::decode_video(&bytes).map(|video| {
+                            let frames = video
+                                .frames
+                                .iter()
+                                .map(|frame| crate::canvas::blur_frame(frame, 8))
+                                .collect();
+                            crate::canvas::BlurredVideo {
+                                frames,
+                                fps: video.fps,
+                            }
+                        })
+                    })
+                    .await
+                    .ok()
+                    .flatten(),
+                Err(error) => {
+                    log::debug!("canvas: fetch failed: {error}");
+                    None
+                }
+            };
+            match &video {
+                Some(video) => log::debug!(
+                    "canvas: {} frames at {:.1} fps",
+                    video.frames.len(),
+                    video.fps
+                ),
+                None => log::debug!("canvas: no video"),
+            }
+            done(video);
+        });
+    }
+
+    /// Spicy's blurred background for `url`, made off the UI thread from the
+    /// disk cache or the network, handed to `done` (`None` when the artwork
+    /// cannot be read).
+    pub fn kawarp(
+        &self,
+        url: String,
+        blur: fn(&image::RgbaImage) -> egui::ColorImage,
+        done: impl FnOnce(Option<egui::ColorImage>) + Send + 'static,
+    ) {
+        let inner = Arc::clone(&self.inner);
+        self.inner.runtime.spawn(async move {
+            let image = match inner.fetch(&url).await {
+                Ok(bytes) => inner
+                    .runtime
+                    .spawn_blocking(move || {
+                        decode(&bytes)
+                            .ok()
+                            .map(|image| blur(&image.thumbnail(256, 256).to_rgba8()))
+                    })
+                    .await
+                    .ok()
+                    .flatten(),
+                Err(_) => None,
+            };
+            done(image);
+        });
     }
 
     /// Whether `url` names a local file already read and found to hold no

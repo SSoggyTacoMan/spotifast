@@ -817,18 +817,30 @@ use your own Client ID, authorize it again in Settings as well.
 
 ## Lyrics
 
-Choose the microphone button in the player bar, or press **L**, to open lyrics.
-A local file from a playlist shows the words in a `.lrc` file of the same name
-beside it, or in its own tags, and the cover in its tags. Otherwise Spotifast
-asks the sources below in turn, and falls back to Spotify's own lyrics when
-the session is signed in, and to LRCLIB by artist, title, album and length.
-Synced lyrics follow the playing line automatically. Scroll to pause following,
-choose **Follow** to resume it, or choose a line to jump to that part of the song.
+Choose the microphone button in the player bar, or press **L**, to open the
+lyrics view: the words fill the side panel in Spicy Lyrics' frosted card, over
+the moving Kawarp background, with the line being sung about a quarter of the
+way down. The playing song sits in brief above the words, a small cover, the
+title and the artist; **Song above the lyrics** in the lyrics settings, or the
+gear's quick settings, turns that row off for words alone. A local file from a
+playlist shows the words in a `.lrc` file of the same name beside it, or in its
+own tags, and the cover in its tags. Otherwise Spotifast asks the sources below
+in turn, and falls back to Spotify's own lyrics when the session is signed in,
+and to LRCLIB by artist, title, album and length.
+Synced lyrics follow the playing line automatically. Scroll to pause following;
+the view returns to the song after a moment once the sung line is in sight, or
+choose a line to jump to that part of the song.
 
-Word-synced lyrics follow each word and fill it in as it is sung, as Spotify's
-own panel does. Spotifast asks for them only when you have a free
-[Spicy Lyrics API key](https://developers.spicylyrics.org), which community
-syncers share under the API's attribution terms. Enter your key in Settings
+The disc button beside it opens the **Now playing** view of its own: the cover,
+the song, its album, a save-to-Liked-Songs button and what is queued next, in
+the same right panel. The two views, the Queue and Listening activity share
+that panel: opening one closes the others.
+
+Word-synced lyrics follow each word and fill it in as it is sung, with Spring
+motion and its holding, glow and distance blur, as Spicy Lyrics draws them.
+Bloom is the softer alternative, closer to Apple Music. Spotifast asks for
+word timing only when you have a free
+[Spicy Lyrics API key](https://developers.spicylyrics.org), which communitysyncers share under the API's attribution terms. Enter your key in Settings
 under **Lyrics > Spicy Lyrics API key**, or set it in Spotifast's environment
 before starting:
 
@@ -852,6 +864,12 @@ When a remote source answers, the end of the panel credits the provider and,
 where the source names them, the people who uploaded or made the sync, along
 with the song's writers.
 
+Behind the words, the cover is blurred and warped by Kawarp, Spicy's moving
+background, and follows the song's energy. With **Spotify Canvas** on (the
+default), a track that has one plays its looping Canvas there instead. The
+track ID is sent to Spicy Lyrics' Canvas service; turn it off in the lyrics
+settings.
+
 The expand button in the lyrics panel or at the right of the player bar, or
 **F** when no text field has focus, opens lyrics in full screen. By default it
 fills the app window; turn off **In-window full screen** in the lyrics settings
@@ -859,24 +877,27 @@ to use the system's own full screen space. A narrow window has no room for the
 player bar's button. Press **F** or **Esc**, or
 choose the shrink button, to return to your previous window size. Full-screen lyrics
 scroll smoothly and highlight the playing line automatically. Scrolling by
-hand pauses following; choose **Follow** to resume. Since 0.11.0, a wide
+hand pauses following; it picks the song back up once the sung line is in
+view. Since 0.11.0, a wide
 window shows the song's cover beside the lyrics, the two centred together,
 and a song without words, such as an instrumental, shows just its cover in
 the middle of the screen.
 
+**Split view** in the lyrics settings, or the gear's quick settings, keeps the
+sidebar, top bar and player bar. The words fill the main area while the Now
+playing view sits in a column on the right; its own button, or the column's
+close button, folds it away for full-width words.
+
 The gear beside the words, in the side panel or full screen, opens quick lyrics
-settings. It leads with the **Spicy**, **Apple Music** and **Minimal** presets,
-text alignment and text size; **More** opens the rest without leaving the
-window. **All settings...** there opens the complete Lyrics section, where the
-same presets sit at the top and every part stays adjustable afterwards:
-where the sung line sits, line
-spacing, dimming and focus, bounce and glow strength, the softness of the
-karaoke edge, line fades, rise and scale, smooth scrolling with an early lead,
-hiding sung lines, simple and minimal modes, merging a split word's syllables,
-duet padding, translations, credits, backdrop dimming, cover colours, a
-boosted word motion, seek fade compensation, refined credits that follow the
-last singer, keeping overlapping lines, and a low performance mode. Timing
-offset and line hold tune the moment a line switches.
+settings: **Spring** or **Bloom**, the text size, and **Fade away previous
+lines**. **All settings...** there opens the complete Lyrics section, where the
+same choices sit at the top and every part stays adjustable: line spacing, glow,
+distance blur, syllable merging and its pace, the original word motion, translations,
+credits, background vocal pop-out, duet padding, keeping overlapping lines,
+smooth scrolling with an early lead, seek fade compensation, and a low
+performance mode. Timing offset tunes the moment the words change. The renderer
+is a native port of Spicy Lyrics Mobile; Spicy Lyrics is credited at the end of
+the words like any other source.
 
 Press **V** in full screen lyrics, or click anywhere that isn't a line of
 lyrics or a control, to put MilkDrop behind the words instead of the cover's

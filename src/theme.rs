@@ -284,13 +284,66 @@ pub fn bold(size: f32) -> egui::FontId {
     fastframe_fonts::Weight::Bold.font_id(size)
 }
 
-/// The lyrics' face, matching Spotifast's native Inter Medium typography.
-pub fn lyrics_quiet(size: f32) -> egui::FontId {
-    medium(size)
+/// The lyrics' face at a weight of 500, 600 or 700: San Francisco where
+/// the system has it, as Spicy Lyrics Mobile bundles, else Inter.
+pub fn lyrics_face(weight: u16, size: f32) -> egui::FontId {
+    egui::FontId::new(size, egui::FontFamily::Name(lyrics_family(weight).into()))
 }
 
-pub fn lyrics_sung(size: f32) -> egui::FontId {
-    medium(size)
+fn lyrics_family(weight: u16) -> &'static str {
+    match weight {
+        ..=500 => "lyrics-500",
+        501..=600 => "lyrics-600",
+        _ => "lyrics-700",
+    }
+}
+
+/// San Francisco's file, read once; `None` off macOS or when it is missing.
+fn lyrics_system_face() -> Option<&'static [u8]> {
+    static FACE: std::sync::OnceLock<Option<&'static [u8]>> = std::sync::OnceLock::new();
+    *FACE.get_or_init(|| {
+        if !cfg!(target_os = "macos") || cfg!(test) {
+            return None;
+        }
+        std::fs::read("/System/Library/Fonts/SFNS.ttf")
+            .ok()
+            .map(|bytes| &*Box::leak(bytes.into_boxed_slice()))
+    })
+}
+
+/// The lyrics families, each its weight of the face, then the interface
+/// face's fallbacks at the same weight.
+fn add_lyrics_fonts(fonts: &mut egui::FontDefinitions) {
+    for (weight, interface) in [
+        (500, fastframe_fonts::Weight::Medium),
+        (600, fastframe_fonts::Weight::SemiBold),
+        (700, fastframe_fonts::Weight::Bold),
+    ] {
+        let mut family = Vec::new();
+        if let Some(bytes) = lyrics_system_face() {
+            let name = format!("{}-system", lyrics_family(weight));
+            let mut data = egui::FontData::from_static(bytes);
+            // The display cut: lyrics are set large.
+            data.tweak.coords = egui::epaint::text::VariationCoords::new([
+                (b"wght", f32::from(weight)),
+                (b"opsz", 28.0),
+            ]);
+            fonts
+                .font_data
+                .insert(name.clone(), std::sync::Arc::new(data));
+            family.push(name);
+        }
+        family.extend(
+            fonts
+                .families
+                .get(&interface.family())
+                .cloned()
+                .unwrap_or_default(),
+        );
+        fonts
+            .families
+            .insert(egui::FontFamily::Name(lyrics_family(weight).into()), family);
+    }
 }
 
 /// How the desktop renders text, read once per process.
@@ -443,6 +496,7 @@ fn install_fonts(ctx: &egui::Context) {
     let mut fonts = fastframe_fonts::FontSetup::default()
         .companion("noto_emoji", std::sync::Arc::new(emoji))
         .definitions();
+    add_lyrics_fonts(&mut fonts);
     text_rendering().apply_to(&mut fonts);
     ctx.set_fonts(fonts);
 }

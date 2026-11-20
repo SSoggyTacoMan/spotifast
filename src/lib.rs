@@ -68,3 +68,10 @@ pub mod vis;
 pub mod winamp;
 pub mod window;
 pub mod zeroconf;
+
+/// Frees the lyrics renderer's graphics objects as its window goes away, while
+/// that window's OpenGL context is still current. The window layer keeps the
+/// long-lived app, so it owns this moment rather than the app itself.
+pub fn release_lyrics_gpu(ctx: &egui::Context, gl: &eframe::glow::Context) {
+    ui::lyrics::release_gpu(ctx, gl);
+}

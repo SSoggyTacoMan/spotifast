@@ -1369,7 +1369,9 @@ pub enum Action {
     SetSidebarRail(bool),
     ToggleQueuePanel,
     ToggleLyricsPanel,
-    ToggleLyricsCard,
+    /// Show or hide the Now Playing view, the cover, the song and what is
+    /// queued next, in the right panel.
+    ToggleNowPlayingPanel,
     /// Show or hide what friends are listening to, in the right panel.
     ToggleFriendsPanel,
     SetLyricsFullscreen(bool),

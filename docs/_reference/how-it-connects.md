@@ -267,7 +267,10 @@ out, or a reconnection that gives up stops it.
 - Spotifast has no telemetry, analytics, or hosted service. When the lyrics
   panel is open and no source has lyrics for the song, it asks the services
   described in [Privacy](/privacy/) and finally sends the track's artist,
-  title, album, and length to [lrclib.net](https://lrclib.net). It also checks
+  title, album, and length to [lrclib.net](https://lrclib.net). With Spotify
+  Canvas on (the default), the lyrics view sends the playing track's Spotify
+  ID to Spicy Lyrics' Canvas service and downloads the returned MP4 from
+  Spotify; turn it off in the lyrics settings. It also checks
   api.github.com once a day for updates. You can turn off automatic checks in
   Settings, or request one there at any time. On macOS, **Check for Updates**
   is also in the application menu. On a connection the system reports as

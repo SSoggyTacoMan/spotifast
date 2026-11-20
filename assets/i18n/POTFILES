@@ -2,7 +2,16 @@ src/ui/sidebar.rs
 src/i18n.rs
 src/ui/player_bar.rs
 src/ui/queue.rs
-src/ui/lyrics.rs
+src/ui/lyrics/animator.rs
+src/ui/lyrics/backdrop.rs
+src/ui/lyrics/bloom.rs
+src/ui/lyrics/gpu.rs
+src/ui/lyrics/layout.rs
+src/ui/lyrics/mod.rs
+src/ui/lyrics/motion.rs
+src/ui/lyrics/scroll.rs
+src/ui/lyrics/stage.rs
+src/ui/lyrics/timeline.rs
 src/lyrics/spicy.rs
 src/ui/friends.rs
 src/ui/widgets.rs
