@@ -5,7 +5,7 @@ pkgrel=1
 pkgdesc="Native Spotify client"
 arch=('x86_64' 'aarch64')
 url="https://github.com/crmne/spotifast"
-license=('MIT')
+license=('AGPL-3.0-only')
 install="${pkgname}.install"
 depends=('dbus' 'alsa-lib' 'libpipewire' 'libglvnd' 'libxkbcommon' 'wayland' 'libx11')
 # MilkDrop builds libprojectM from source at compile time: cmake drives

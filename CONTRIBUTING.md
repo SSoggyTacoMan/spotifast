@@ -281,5 +281,7 @@ on a Nix host or wait for the Nix CI job. The package reads `Cargo.lock`
 directly, so a dependency update needs no hash in `flake.nix`. Releases must wait for all required CI
 jobs on the version commit before the tag is pushed.
 
-By contributing, you agree that your contribution is licensed under the
-project's MIT License.
+Contributions to this modified fork are licensed under AGPL-3.0-only.
+Unchanged upstream Spotifast code retains its original MIT permission and
+copyright notice. See `LICENSE` and `THIRD_PARTY_NOTICES.md`; this fork's
+licensing does not change upstream Spotifast's contribution policy.

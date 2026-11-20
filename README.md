@@ -16,7 +16,7 @@
 <p align="center">
   <a href="Cargo.toml"><img src="https://img.shields.io/badge/Built_with-Rust-1ed760" alt="Built with Rust"></a>
   <a href="https://spotifast.rocks/download/"><img src="https://img.shields.io/badge/Linux_%C2%B7_macOS_%C2%B7_Windows-24292f" alt="Linux, macOS, and Windows"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-1ed760" alt="MIT license"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0-1ed760" alt="AGPL-3.0 license"></a>
 </p>
 
 Spotifast is a Spotify client written in Rust with
@@ -73,7 +73,7 @@ Spotify lyrics without changing players.
 |---|---|
 | **Library and search** | Browse playlists, Liked Songs, albums, artists, and podcasts. Discover upcoming albums on artist pages and open their countdown to pre-save. Search the catalogue and edit playlists you own. Copy a song's link, title, or artists from its menu. |
 | **Local files** | Play the local files your playlists list from a folder you choose in Settings, at any sample rate. Names show spaces and accents correctly, including in cached playlists. |
-| **Lyrics** | Spotify lyrics when the playback session is signed in, with community timing from Spicy Lyrics (with a key), AMLL, Unison, lrc.red and NetEase, then LRCLIB, as fallbacks. The panel follows each word as it is sung and fills it in, Spotify-style. Spicy, Apple Music and Minimal presets, plus layout, motion, timing and performance controls, shape how they look. Temporary LRCLIB overloads retry and try search; older cached lyrics remain available during outages. |
+| **Lyrics** | Spotify lyrics when the playback session is signed in, with community timing from Spicy Lyrics (with a key), AMLL, Unison, lrc.red and NetEase, then LRCLIB, as fallbacks. A native port of Spicy Lyrics Mobile supplies Spring and Bloom motion, held letters, glow, distance blur, background vocals, duets and interlude dots. Spicy's Now Playing card, fullscreen arrangement and animated artwork background work without a browser engine. Size, timing and a small set of renderer options remain adjustable. Temporary LRCLIB overloads retry and try search; older cached lyrics remain available during outages. |
 | **Spotify Connect** | Play on this computer or control playback on your other devices, including Google Cast speakers and groups. Cast devices appear as they are discovered; frequently and recently chosen outputs rise to the top. Remote volume keeps your chosen level while Spotify updates. |
 | **Queue** | Add songs to the queue, or choose **Play next** to put a song or selection first when playing on this computer. |
 | **Themes** | Choose light, dark, system appearance, or custom colours, with one theme for light mode and one for dark mode that switch with the system. On Omarchy, follow your desktop theme. |
@@ -205,7 +205,11 @@ and [Outfit](https://fonts.google.com/specimen/Outfit) typefaces (OFL), and
 Spotifast is an independent project and is not affiliated with Spotify.
 Spotify is a trademark of Spotify AB.
 
-Licensed under the [MIT License](LICENSE).
+This modified fork integrates [Spicy Lyrics Mobile](https://github.com/spicylyrics/mobile)
+and [Spicy Lyrics](https://github.com/Spikerko/spicy-lyrics) renderer behavior.
+It is licensed as a combined work under [AGPL-3.0-only](LICENSE), with upstream
+Spotifast's MIT notice retained. See [third-party notices](THIRD_PARTY_NOTICES.md)
+for attribution, reference revisions and source-distribution requirements.
 
 ## Star history
 

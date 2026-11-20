@@ -7,7 +7,7 @@
     <name>Carmine Paolino</name>
   </developer>
   <metadata_license>CC0-1.0</metadata_license>
-  <project_license>MIT</project_license>
+  <project_license>AGPL-3.0-only</project_license>
   <description>
     <p>
       A Spotify client written in Rust with no browser engine. It starts

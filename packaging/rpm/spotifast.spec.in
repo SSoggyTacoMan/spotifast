@@ -10,7 +10,7 @@ Version:        @VERSION@
 Release:        1%{?dist}
 Summary:        Native Spotify client
 
-License:        MIT
+License:        AGPL-3.0-only
 URL:            https://spotifast.rocks
 Source0:        https://github.com/crmne/spotifast/releases/download/v%{version}/spotifast-v%{version}-source.tar.gz
 # Every crate Cargo.lock names, from `cargo vendor`, with the Cargo

@@ -18,7 +18,7 @@ nfpm:
   maintainer: Carmine Paolino <carmine@paolino.me>
   homepage: https://github.com/crmne/spotifast
   description: A native Spotify client
-  license: MIT
+  license: AGPL-3.0-only
   contents:
   # A glob source makes nFPM append its basename to the destination directory.
   - src: "@PAYLOAD@/*-v@VERSION@-@TARGET@/spotifast"

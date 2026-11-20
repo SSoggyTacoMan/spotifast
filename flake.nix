@@ -209,7 +209,7 @@
               meta = {
                 description = "Fast native Spotify client with local playback and Spotify Connect";
                 homepage = "https://spotifast.rocks";
-                license = pkgs.lib.licenses.mit;
+                license = pkgs.lib.licenses.agpl3Only;
                 mainProgram = "spotifast";
               };
             };

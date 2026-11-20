@@ -5,7 +5,7 @@ pkgrel=@PKGREL@
 pkgdesc="Native Spotify client"
 arch=('x86_64' 'aarch64')
 url="https://github.com/crmne/spotifast"
-license=('MIT')
+license=('AGPL-3.0-only')
 install="${pkgname}.install"
 # alsa-lib and libpipewire are linked directly; the rest are dlopened by winit
 # and glutin at startup, and this is a GUI-only application, so all of them
